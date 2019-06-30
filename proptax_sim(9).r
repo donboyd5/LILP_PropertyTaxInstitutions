@@ -46,37 +46,26 @@ create_cycle <- function(clength, cstart, zbefore=NULL){
 # create_cycle(7, 40)
 # create_cycle(7, 5, zbefore=5)
 
-# get_mv_acquisition <- function(mv, sale, av_grcap){
-#   mv_acquisition <- make_vec(0)[1:length(mv)]
-#   mv_acquisition[1] <- mv[1]
-#   for(i in 2:length(mv)) {
-#     mv_acquisition[i] <- ifelse(sale[i]==1, 
-#                                 mv[i], 
-#                                 min(mv[i], mv_acquisition[i - 1] * (1 +  av_grcap)))
-#   }
-#   return(mv_acquisition)
-# }
-
-mv <- seq(100, 199, 10)
-sale <- sample(0:1, length(mv), replace=TRUE)
-av_grcap <- .01
-
-nrows <- 1000
-ncols <- 65
-
-nrows <- 8
-ncols <- 5
-mmv <- matrix(sample(100:500, nrows * ncols, replace=TRUE), nrow=nrows, ncol=ncols)
-msale <- matrix(sample(0:1, length(mmv), replace=TRUE), nrow=nrows, ncol=ncols)
+# mv <- seq(100, 199, 10)
+# sale <- sample(0:1, length(mv), replace=TRUE)
+# av_grcap <- .01
+# 
+# nrows <- 1000
+# ncols <- 65
+# 
+# nrows <- 8
+# ncols <- 5
+# mmv <- matrix(sample(100:500, nrows * ncols, replace=TRUE), nrow=nrows, ncol=ncols)
+# msale <- matrix(sample(0:1, length(mmv), replace=TRUE), nrow=nrows, ncol=ncols)
 # mmv
 # msale
-mmva <- mmv
-for(j in 2:ncols){
-  mmva[, j] <- ifelse(msale[, j]==1,
-                      mmv[, j], 
-                      pmin(mmv[, j], mmva[, j - 1] * (1 +  av_grcap)))
-}
-mmv; msale; mmva
+# mmva <- mmv
+# for(j in 2:ncols){
+#   mmva[, j] <- ifelse(msale[, j]==1,
+#                       mmv[, j], 
+#                       pmin(mmv[, j], mmva[, j - 1] * (1 +  av_grcap)))
+# }
+# mmv; msale; mmva
 
 # microbenchmark(
 #   get_mv_acquisition(mv, sale, av_grcap),
@@ -149,9 +138,8 @@ build_data <- function(assume, nprop){
   # matrix of sale indicators
   set.seed(1234)
   msale <- matrix(rbinom(nprop * totyears, 1, assume$sale_fraction), nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))
-  zero_years <- NULL
-  if(assume$salecycle_zbefore >= min(years)) zero_years <- min(years):(assume$salecycle_zbefore -1)
-  if(!is.null(zero_years)) msale[, as.character(zero_years)] <- 0
+  # colMeans(msale)
+  # msale[1:10, 1:5]
   
   # matrix of market values
   mmv <- matrix(rep(100 * prop_base$icumgr_mv, nprop), byrow=TRUE, nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))

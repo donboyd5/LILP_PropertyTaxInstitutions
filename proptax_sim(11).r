@@ -1,4 +1,6 @@
 
+# TODO: fix mvar_cycle so that it picks up sales more quickly! (I think)
+
 
 #****************************************************************************************************
 #                setup ####
@@ -46,38 +48,6 @@ create_cycle <- function(clength, cstart, zbefore=NULL){
 # create_cycle(7, 40)
 # create_cycle(7, 5, zbefore=5)
 
-# get_mv_acquisition <- function(mv, sale, av_grcap){
-#   mv_acquisition <- make_vec(0)[1:length(mv)]
-#   mv_acquisition[1] <- mv[1]
-#   for(i in 2:length(mv)) {
-#     mv_acquisition[i] <- ifelse(sale[i]==1, 
-#                                 mv[i], 
-#                                 min(mv[i], mv_acquisition[i - 1] * (1 +  av_grcap)))
-#   }
-#   return(mv_acquisition)
-# }
-
-mv <- seq(100, 199, 10)
-sale <- sample(0:1, length(mv), replace=TRUE)
-av_grcap <- .01
-
-nrows <- 1000
-ncols <- 65
-
-nrows <- 8
-ncols <- 5
-mmv <- matrix(sample(100:500, nrows * ncols, replace=TRUE), nrow=nrows, ncol=ncols)
-msale <- matrix(sample(0:1, length(mmv), replace=TRUE), nrow=nrows, ncol=ncols)
-# mmv
-# msale
-mmva <- mmv
-for(j in 2:ncols){
-  mmva[, j] <- ifelse(msale[, j]==1,
-                      mmv[, j], 
-                      pmin(mmv[, j], mmva[, j - 1] * (1 +  av_grcap)))
-}
-mmv; msale; mmva
-
 # microbenchmark(
 #   get_mv_acquisition(mv, sale, av_grcap),
 #   getmva(mv, sale, av_grcap),
@@ -98,8 +68,6 @@ get_mv_cycle <- function(mv, reassess, armv_lag){
   }
   return(mv_cycle)
 }
-# mv <- seq(100, 210, 10); reassess <- rep(c(0, 0, 1), 4); armv_lag <- 2
-# cbind(reassess, mv, get_mv_cycle(seq(100, 210, 10), rep(c(0, 0, 1), 4), 2))
 
 
 #****************************************************************************************************
@@ -121,6 +89,9 @@ rcpath <- paste0(rcdir, rcfn)
 assume <- as.list(rc[3, ])
 assume
 
+assume <- as.list(rc[3, ])
+assume
+
 build_data <- function(assume, nprop){
   # return data frame with data for a single scenario
   endyear <- 50 # starting from year 1
@@ -129,8 +100,7 @@ build_data <- function(assume, nprop){
   years <- (-burnyears+1):endyear
   iyears <- name_vec(1:totyears)
   
-  reassess <- create_cycle(assume$avcycle, assume$avcycle_startyear) # reassessment cycle
-  # sale <- create_cycle(assume$salecycle, assume$salecycle_startyear, zbefore=assume$salecycle_zbefore) # sales cycle
+  reassess <- create_cycle(assume$avcycle, assume$avcycle_startyear) # reassessment cycle -- 1 or 0
   
   if(assume$mv_growth=="gr_shock_us") mv_gr <- insert(gr_shock_us, make_vec(.06))
   
@@ -141,11 +111,11 @@ build_data <- function(assume, nprop){
                       gr_mv=mv_gr, # growth that occurs IN the current year, to the next
                       cumgr_mv=cumprod(1 + c(0, head(gr_mv, -1))), # cumulative growth to the NEXT year 
                       icumgr_mv=cumgr_mv / cumgr_mv[year==1]) # indexed to year 1
-  
+
   # now create a database of properties
   
   # work with matrices - rows = nprops, cols = years
-
+  
   # matrix of sale indicators
   set.seed(1234)
   msale <- matrix(rbinom(nprop * totyears, 1, assume$sale_fraction), nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))
@@ -153,196 +123,114 @@ build_data <- function(assume, nprop){
   if(assume$salecycle_zbefore >= min(years)) zero_years <- min(years):(assume$salecycle_zbefore -1)
   if(!is.null(zero_years)) msale[, as.character(zero_years)] <- 0
   
-  # matrix of market values
-  mmv <- matrix(rep(100 * prop_base$icumgr_mv, nprop), byrow=TRUE, nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))
-  # colMeans(mmv)
-  # mmv[1:10, 1:5]
+  # matrix of market values (true) - later may update with stochastic growth
+  mmv_true <- matrix(rep(100 * prop_base$icumgr_mv, nprop), byrow=TRUE, nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))
+  # colMeans()
+  # [1:10, 1:5]
   
-  # matrix of aquisition market values - if there is a sale use market values, if not 
+  # matrix of mv on the assessment roll, based on cycle
+  mmvar_cycle <- matrix(NA, nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))
+  mmvar_cycle[, 1:assume$armv_lag] <- mmv_true[, rep(1, assume$armv_lag)] # fill the initial lags with firstyear mv
+  
+  # matrix of aquisition market values - if there is a sale use market values, if not use prior plus growth
+  # note that this is an "on the assessment roll" concept meaning it can be lagged relative to true market values
   # use lesser of grown prior amv or the mv
   mamv <- matrix(NA, nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))
-  mamv[, 1:assume$armv_lag] <- mmv[, rep(1, assume$armv_lag)] # fill the initial lags with firstyear mv
+  mamv[, 1:assume$armv_lag] <- mmv_true[, rep(1, assume$armv_lag)] # fill the initial lags with firstyear mv
+  
+  # fill the cycle and acquisition values
   for(j in (assume$armv_lag + 1):totyears){
+    mmvar_cycle[, j] <- ifelse(reassess[j]==1, 
+                               mmv_true[, j - assume$armv_lag], 
+                               mmvar_cycle[, j - 1])
+    
     mamv[, j] <- ifelse(msale[, j]==1,
-                        mmv[, j - assume$armv_lag], 
-                        pmin(mmv[, j - assume$armv_lag], mamv[, j - 1] * (1 +  assume$av_grcap)))
+                        mmv_true[, j - assume$armv_lag], 
+                        pmin(mmv_true[, j - assume$armv_lag], mamv[, j - 1] * (1 +  assume$av_grcap)))
   }
-  # mmv[1:8, 1:10]
+  # mmv_true[1:8, 1:10]
   # msale[1:8, 1:10]
   # mamv[1:8, 1:10]
   
-  mdf <- bind_rows(as_tibble(mmv) %>% mutate(vname="mv_boy", propid=row_number()),
+  # CAUTION: mvar is market value on the assessment roll -- it can be greater than true market value 
+  # because there can be lags
+  mdf <- bind_rows(as_tibble(mmv_true) %>% mutate(vname="mv_true", propid=row_number()),
+                   as_tibble(mmvar_cycle) %>% mutate(vname="mvar_cycle", propid=row_number()),
                    as_tibble(msale) %>% mutate(vname="sale", propid=row_number()),
-                   as_tibble(mamv) %>% mutate(vname="mv_acquisition", propid=row_number())) %>%
+                   as_tibble(mamv) %>% mutate(vname="mvar_acquisition", propid=row_number())) %>%
     gather(year, value, -propid, -vname) %>%
     mutate(year=as.integer(year)) %>%
     spread(vname, value)
-  # ht(mdf) 
-  # glimpse(mdf)
   
   prop_all <- prop_base  %>%
-    right_join(mdf, by="year")
-  # glimpse(prop_all)
+    right_join(mdf, by="year") %>%
+    select(runname, propid, year, index, sale, reassess, gr_mv, icumgr_mv, mv_true, mvar_cycle, mvar_acquisition)
   
   return(prop_all)
 }
 
-# system.time(df <- build_data(assume))
-# df %>% ht
-
 a <- proc.time()
-# df <- ldply(as.list(rc), build_data, .progress="text")
-df <- rc %>%
+simrun <- rc %>%
   rowwise() %>% 
   do(build_data(as.list(.), 1000)) %>%
   ungroup
 b <- proc.time()
 b - a
 
-df %>% ht
-df %>%
+# check <- simrun %>%
+#   filter(runname=="shock_30pct", propid==3)
+
+simrun %>% ht
+simrun %>%
   filter(propid==1) %>%
   select(runname, year, propid, value=sale) %>%
   spread(runname, value) %>%
   head
 
-prop_sum <- df %>% 
+prop_sum <- simrun %>% 
   group_by(runname, year) %>%
-  summarise_at(vars(sale, starts_with("mv")), ~mean(.)) %>%
+  summarise_at(vars(sale, starts_with("mv")), ~sum(.)) %>%
   ungroup
-
-prop_sum %>%
-  select(runname, year, value=sale) %>%
-  spread(runname, value)
+ht(prop_sum)
 
 prop_sum %>% 
   filter(year %in% 1:25) %>%
-  mutate_at(vars(mv_acquisition), ~ . / mv_boy * 100) %>% # for indexed to mv graph
-  ggplot(aes(year, mv_acquisition, colour=runname)) + 
+  mutate_at(vars(mvar_acquisition), ~ . / mv_true * 100) %>% # for indexed to mv graph
+  ggplot(aes(year, mvar_acquisition, colour=runname)) + 
   geom_line() + 
   geom_point() +
   geom_hline(yintercept = 100) +
-  scale_y_continuous(breaks=seq(0, 500, 20)) +
+  scale_y_continuous(breaks=seq(0, 500, 10)) +
   theme_bw()
-
-
-
 
 prop_sum %>% 
-  filter(year %in% 1:25) %>% 
-  select(year, starts_with("mv_")) %>%
-  mutate_at(vars(-year, -mv_boy), ~ . / mv_boy * 100) %>% # for indexed to mv graph
-  pivot_longer(-year) %>%
-  mutate(name=factor(name, levels=c("mv_boy", "mv_acquisition", "mv_avcycle"))) %>%
-  filter(name!="mv_boy") %>%
-  ggplot(aes(year, value, colour=name)) + 
+  filter(year %in% 1:25) %>%
+  mutate_at(vars(mvar_cycle), ~ . / mv_true * 100) %>% # for indexed to mv graph
+  ggplot(aes(year, mvar_cycle, colour=runname)) + 
   geom_line() + 
   geom_point() +
   geom_hline(yintercept = 100) +
-  scale_color_manual(values=c("blue", "#fc8d59", "#fee08b")) +
-  scale_y_continuous(breaks=seq(0, 500, 20), limits=c(50, 150)) +
+  scale_y_continuous(breaks=seq(0, 500, 10)) +
   theme_bw()
 
-
-
-
-
-#****************************************************************************************************
-#                model inputs ####
-#****************************************************************************************************
-# year 1 is the desired start year year
-# all years are relative to that - in other words if we have an 11 year burn-in period, then it starts in year -10
-# the Great Recession shock, approximately - MV growth rates for US as a whole - starting with year 1 (after burn-in)
-
-(mv_gr <- insert(gr_shock_us, make_vec(.06)))
-
-
-
-
-assume <- list()
-assume$avcycle <- 3
-assume$avcycle_startyear <- 1
-assume$armv_lag <- 2
-assume$salecycle <- 8
-assume$salecycle_startyear <- 9
-assume$max_mvpch	<- .1
-assume$av_ratio <- 1
-assume$av_grcap <- .02
-
-
+# prop_sum %>% 
+#   filter(year %in% 1:25) %>% 
+#   select(year, starts_with("mv_")) %>%
+#   mutate_at(vars(-year, -mv_boy), ~ . / mv_boy * 100) %>% # for indexed to mv graph
+#   pivot_longer(-year) %>%
+#   mutate(name=factor(name, levels=c("mv_true", "mvar_acquisition", "mv_avcycle"))) %>%
+#   filter(name!="mv_boy") %>%
+#   ggplot(aes(year, value, colour=name)) + 
+#   geom_line() + 
+#   geom_point() +
+#   geom_hline(yintercept = 100) +
+#   scale_color_manual(values=c("blue", "#fc8d59", "#fee08b")) +
+#   scale_y_continuous(breaks=seq(0, 500, 20), limits=c(50, 150)) +
+#   theme_bw()
 
 
 #****************************************************************************************************
-#                new model ####
-#****************************************************************************************************
-#.. initialize vectors ----
-
-(reassess <- create_cycle(assume$avcycle, assume$avcycle_startyear)) # reassessment cycle
-(sale <- create_cycle(assume$salecycle, assume$salecycle_startyear, zbefore=assume$salecycle_startyear)) # sales cycle
-
-# values common to all properties
-prop_base <- tibble(year=years,
-             index=iyears,
-             reassess=reassess,
-             gr_mv=mv_gr, # growth that occurs IN the current year, to the next
-             cumgr_mv=cumprod(1 + c(0, head(gr_mv, -1)))) # cumulative growth to the NEXT year 
-
-# now create a database of properties
-nprop <- 1000
-set.seed(1234); prop_db <- expand_grid(year=years, propid=1:nprop) %>%
-  mutate(sale=rbinom(length(propid), 1, .8))
-prop_db %>%
-  summarise_at(vars(sale), list(mean=~mean(.), median=~median(.)))
-
-prop_all <- prop_base  %>%
-  left_join(prop_db, by="year") %>%
-  group_by(propid) %>%
-  arrange(year) %>%
-  mutate(mv_boy=cumgr_mv / cumgr_mv[year==1] * 100,
-         mv_acquisition=get_mv_acquisition(mv_boy, sale, assume$av_grcap), # mv on the roll under acquisition-value assessing
-         mv_avcycle=get_mv_cycle(mv_boy, reassess, assume$armv_lag))  # mv on the roll if there is mass reassessment on a cycle
-ht(prob_all)
-
-prop_sum <- prop_all %>% 
-  group_by(year) %>%
-  summarise_at(vars(sale, starts_with("mv")), ~mean(.))
-
-p80 <- prop_sum %>% 
-  filter(year %in% 1:25) %>% 
-  select(year, starts_with("mv_")) %>%
-  mutate_at(vars(-year, -mv_boy), ~ . / mv_boy * 100) %>% # for indexed to mv graph
-  pivot_longer(-year) %>%
-  mutate(name=factor(name, levels=c("mv_boy", "mv_acquisition", "mv_avcycle"))) %>%
-  filter(name!="mv_boy") %>%
-  ggplot(aes(year, value, colour=name)) + 
-  geom_line() + 
-  geom_point() +
-  geom_hline(yintercept = 100) +
-  scale_color_manual(values=c("blue", "#fc8d59", "#fee08b")) +
-  scale_y_continuous(breaks=seq(0, 500, 20), limits=c(50, 150)) +
-  theme_bw()
-
-p01
-p80
-
-# prop_db %>%
-#   # group_by(propid) %>%
-#   group_by(year) %>%
-#   summarise(sale=sum(sale)) %>%
-#   ggplot(aes(sale)) +
-#   geom_histogram(fill="blue") +
-#   scale_x_continuous(breaks=seq(0, 1000, 2))
-
-# ht(prop_db)
-# mean(prop_db$sale)
-# prop_db %>%
-#   group_by(year) %>%
-#   summarise(sale=mean(sale)) %>%
-#   arrange(-sale) %>%
-#   ht
-
-#****************************************************************************************************
-#                run the model ####
+#                OLD: run the model ####
 #****************************************************************************************************
 source(file.path(PROJHOME, "subprograms", "get_assumptions.r"))
 
