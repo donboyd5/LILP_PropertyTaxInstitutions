@@ -19,6 +19,12 @@ library("haven") # haven, for SPSS, SAS and Stata files.
 library("vctrs")
 library("precis")
 
+library("gridExtra")
+library("ggrepel")
+
+library("knitr")
+library("kableExtra")
+
 library("tibbletime") # https://business-science.github.io/tibbletime/
 
 library("btools") # library that I created (install from github)

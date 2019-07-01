@@ -1,5 +1,9 @@
 
 # TODO: fix mvar_cycle so that it picks up sales more quickly! (I think)
+# - cycle
+# - lag
+# - portable
+# - 
 
 
 #****************************************************************************************************
@@ -7,8 +11,6 @@
 #****************************************************************************************************
 source(file.path(PROJHOME, "subprograms", "globals.r"))
 source(file.path(PROJHOME, "subprograms", "libraries.r"))
-library("multidplyr")
-
 source(file.path(PROJHOME, "subprograms", "functions.r"))
 
 
@@ -51,7 +53,7 @@ build_assessment_roll <- function(assume, globals, nprop){
                          dimnames=list(1:nprop, years))
   
   #.. NON-RESIDENTIAL property -- VERY SIMPLE ----
-  nonres_mult <- (1 - assume$res_share) / assume$res_share
+  nonres_mult <- (1 - assume$acqvalue_share) / assume$acqvalue_share
   mmv_nonres <- mmv_res_true * nonres_mult
   # mmv_total <- mmv_res_true + mmv_nonres
   
@@ -142,23 +144,12 @@ ns(growth_scenarios)
 #                get run control ####
 #****************************************************************************************************
 rcdir <- "D:/Dropbox/Open Projects/LILP/PropertyTaxAndInstitutions/ProjectReport/"
-rcfn <- "Boyd LILP PropertyTaxInstitutions(5).xlsx"
-# Boyd LILP PropertyTaxInstitutions(4).xlsx
+rcfn <- "Boyd LILP PropertyTaxInstitutions(6).xlsx"
 rcpath <- paste0(rcdir, rcfn)
+
 
 (rc <- read_excel(rcpath, sheet="run_control", skip = 3))
 
-assume <- as.list(rc[3, ])
-assume
-
-assume <- as.list(rc[7, ])
-assume
-
-# convert a growth scenario into a vector of growth rates
-# assume$mv_growth
-# growth_scenarios %>%
-#   select(cyear, assume$mv_growth)
-# mv_gr <- insert(growth_scenarios[[assume$mv_growth]] / 100, make_vec(.06))
 
 #****************************************************************************************************
 #                build assessment roll data ####
@@ -172,12 +163,6 @@ avroll <- rc %>%
 b <- proc.time()
 b - a
 
-avroll %>% ht
-avroll %>%
-  filter(propid==1) %>%
-  select(runname, year, propid, value=sale) %>%
-  spread(runname, value) %>%
-  head
 
 #.. create summary of assessment roll ----
 avroll_sum <- avroll %>% 
@@ -224,30 +209,24 @@ taxlevy <- avroll_sum_pch %>%
          tax_cap=ifelse(mvetr_cap==1, tax_desired, mvar_total * mvetr_cap),
     tax_levy=pmin(tax_desired, tax_cap))
 
-# taxlevy %>%
-#   filter(year <= 25, runname=="CA5cap") %>%
-#   select(year, runname, mv_total, mvar_total, tax_desired, tax_cap, tax_levy)
 
 # do a nice graph, with values indexed either to year=6 (mv_true, tax_desired) or to their counterparts in the given year
 # (a) year 6 market value for assessment roll, and (b) year 6 levy
-iyear <- 6
-taxlevy %>%
-  filter(year <= 25, runname=="CA5cap") %>%
-  select(year, runname, mv_total, mvar_total, tax_desired, tax_cap, tax_levy) %>%
-  mutate(mvtemp=mv_total, taxtemp=tax_levy) %>%
-  mutate_at(vars(mv_total, mvar_total), ~. / mvtemp[year==iyear] * 100) %>%
-  mutate_at(vars(tax_desired, tax_cap, tax_levy), ~ . / taxtemp[year==iyear] * 100) %>%
-  select(-contains("temp")) %>%
-  gather(vname, value, -runname, -year) %>%
-  ggplot(aes(year, value, colour=vname, linetype=vname)) + # , size=vname
-  geom_line(size=1.5) +
-  geom_hline(yintercept = 100, linetype="dashed") +
-  geom_vline(xintercept = iyear, linetype="dashed") +
-  scale_y_continuous(name="Values indexed", breaks=seq(0, 1000, 50)) +
-  # scale_colour_manual(values=c("red", "green", "blue", "orange", "purple")) +
-  # scale_linetype_manual(values=c("solid", "dashed", "dotted")) +
-  # scale_size_manual(values=c(1.5, 1, 1.25)) +
-  theme_bw()
+# iyear <- 6
+# taxlevy %>%
+#   filter(year <= 15, runname=="CA_rules_USGR_5psale") %>%
+#   select(year, runname, mv_total, mvar_total, tax_desired, tax_cap, tax_levy) %>%
+#   mutate(mvtemp=mv_total, taxtemp=tax_levy) %>%
+#   mutate_at(vars(mv_total, mvar_total), ~. / mvtemp[year==iyear] * 100) %>%
+#   mutate_at(vars(tax_desired, tax_cap, tax_levy), ~ . / taxtemp[year==iyear] * 100) %>%
+#   select(-contains("temp")) %>%
+#   gather(vname, value, -runname, -year) %>%
+#   ggplot(aes(year, value, colour=vname, linetype=vname)) + # , size=vname
+#   geom_line(size=1.5) +
+#   geom_hline(yintercept = 100, linetype="dashed") +
+#   geom_vline(xintercept = iyear, linetype="dashed") +
+#   scale_y_continuous(name="Values indexed", breaks=seq(0, 1000, 10)) +
+#   theme_bw()
 
 
 #.. mv comparisons ----
@@ -255,7 +234,6 @@ taxlevy %>%
 # (a) year 6 market value for assessment roll, and (b) year 6 levy
 iyear <- 6
 ilevy <- taxlevy %>%
-  filter(year <= 25) %>%
   select(year, runname, mv_total, mvar_total, tax_desired, tax_cap, tax_levy) %>%
   group_by(runname) %>%
   mutate(mvtemp=mv_total, taxtemp=tax_levy) %>%
@@ -268,16 +246,155 @@ glimpse(ilevy)
 count(ilevy, runname)
 count(ilevy, vname)
 
-ilevy %>%
-  filter(runname %in% c("CA20", "CA20cap")) %>%
-  filter(str_detect(vname, "mv")) %>%
-  ggplot(aes(year, value, colour=vname)) +
-  geom_line(size=1.5) +
+# compare tax levy and tax cap to desired tax for 3 different runs
+# f <- function(run){
+#   # create factor
+#   levs <- c("CA5etrcap_lowres", "CA5etrcap", "CA5etrcap_hires")
+#   labs <- c("10% residential", "25% residential", "40% residential")
+#   factor(run, levels=levs, labels=labs)
+# }
+
+#.. Acquisition-value assessing and the residential share ----
+count(ilevy, runname)
+#.... Market value and market-value on the assessment roll ----
+
+maxyear <- 15
+
+# make a graph with California rules two different turnover rates
+xa <- expression(vname=="mvar_total" & str_detect(runname, "CA_rules_"))
+xb <- expression(vname=="mv_total" & runname=="CA_rules_USGR_5psale")
+levs <- c("mv_total", "CA_rules_USGR_5psale", "CA_rules_USGR_20psale")
+labs <- c("Market value", "Assessed value\n5% annual turnover", "Assessed value\n20% annual turnover")
+pdata <- ilevy %>%
+  filter(eval(xa) | eval(xb)) %>%
+  rename(linelabel=runname) %>%
+  mutate(linelabel=ifelse(vname=="mv_total", vname, linelabel)) %>%
+  select(-vname) %>%
+  mutate(linelabel=factor(linelabel, levels=levs, labels=labs)) %>%
+  arrange(linelabel)
+
+pca <- pdata %>%
+  filter(year <= maxyear) %>%
+  ggplot(aes(year, value, colour=linelabel)) +
+  geom_line(size=1) +
   geom_hline(yintercept = 100, linetype="dashed") +
   geom_vline(xintercept = iyear, linetype="dashed") +
-  scale_y_continuous(name="Values indexed", breaks=seq(0, 1000, 20)) +
+  scale_x_continuous(breaks=seq(0, 50, 1)) +
+  scale_y_continuous(name="Values indexed (True market value=100 in year 6)", breaks=seq(0, 1000, 10)) +
+  ggtitle("True market value and assessed market value at 5% and 20% turnover rates",
+          subtitle = "Scenario: Market shock, California acquisition-value assessing") +
   theme_bw() +
-  facet_wrap(~runname, ncol = 2)
+  theme(legend.title=element_blank()) +
+  theme(legend.position = c(.8,.1))
+pca 
+
+
+# now, exclude nonresidential from acquisition-value assessing, use 5% turnover
+xa <- expression(vname=="mvar_total" & str_detect(runname, "CA_") & str_detect(runname, "5psale"))
+xb <- expression(vname=="mv_total" & runname=="CA_rules_USGR_5psale")
+levs <- c("mv_total", "CA_rules_USGR_5psale", "CA_rulesxnonres_USGR_5psale_res30",
+          "CA_rulesxnonres_USGR_5psale_res70")
+labs <- c("Market value", "Assessed value\nNonresidential participating", 
+          "Assessed value\nNonresidential disallowed, 30% nonresidential",
+          "Assessed value\nNonresidential disallowed, 70% nonresidential")
+pdata <- ilevy %>%
+  filter(eval(xa) | eval(xb)) %>%
+  rename(linelabel=runname) %>%
+  mutate(linelabel=ifelse(vname=="mv_total", vname, linelabel)) %>%
+  select(-vname) %>%
+  mutate(linelabel=factor(linelabel, levels=levs, labels=labs)) %>%
+  arrange(linelabel)
+
+pcaxnonres <- pdata %>%
+  filter(year <= maxyear) %>%
+  ggplot(aes(year, value, colour=linelabel)) +
+  geom_line(size=1) +
+  geom_hline(yintercept = 100, linetype="dashed") +
+  geom_vline(xintercept = iyear, linetype="dashed") +
+  scale_x_continuous(breaks=seq(0, 50, 1)) +
+  scale_y_continuous(name="Values indexed (True market value=100 in year 6)", breaks=seq(0, 1000, 10)) +
+  ggtitle("True market value and assessed market value with and without nonresidential acquisition value",
+          subtitle = "Scenario: Market shock,  acquisition-value assessing") +
+  theme_bw() +
+  theme(legend.title=element_blank()) +
+  theme(legend.position = c(.8,.15))
+pcaxnonres
+
+ml <- marrangeGrob(list(pca, pcaxnonres), nrow=2, ncol=1, top=NULL)
+ml
+ggsave(paste0("./results/", "CArules_mvar_v_mvtrue.png"), ml, scale=1.6, width=6, height=8, units="in")
+
+
+
+#.... Tax levy, tax cap, and desired tax levy ----
+pdata <- ilevy %>%
+  filter(vname %in% c("tax_cap", "tax_levy")) %>%
+  filter(runname %in% c("CA5etrcap", "CA5etrcap_lowres", "CA5etrcap_hires")) %>%
+  mutate(runname=f(runname))
+
+linedata <- ilevy %>%
+  filter(vname=="tax_desired", runname=="CA5etrcap") %>%
+  select(year, tax_desired=value)
+
+maxyear <- 15
+p <- pdata %>%
+  filter(year <= maxyear, vname=="tax_cap") %>%
+  ggplot(aes(year, value)) +
+  geom_line(aes(colour=runname), size=1) +
+  geom_line(aes(year, tax_desired), 
+            data=linedata %>% filter(year <= maxyear),
+            size=1) +
+  geom_hline(yintercept = 100, linetype="dashed") +
+  geom_vline(xintercept = iyear, linetype="dashed") +
+  scale_x_continuous(breaks=seq(0, 50, 1)) +
+  scale_y_continuous(name="Values indexed (Actual levy=100 in year 6)", breaks=seq(0, 1000, 10)) +
+  ggtitle("Tax cap and desired tax levy at different acquisition-value shares of tax base",
+          subtitle = "Scenario: Market shock, acquisition-value assessing") +
+  annotate("text", x = 12, y = 145, label = "Desired\nlevy", size=4) +
+  theme_bw() +
+  theme(legend.title=element_blank())
+p  
+ggsave(paste0("./results/", "taxcap_v_desired.png"), p, scale=1.3, width=7, height=6, units="in")
+
+maxyear <- 15
+p <- pdata %>%
+  filter(year <= maxyear, vname=="tax_levy") %>%
+  ggplot(aes(year, value)) +
+  geom_line(aes(colour=runname), size=1) +
+  geom_line(aes(year, tax_desired), 
+            data=linedata %>% filter(year <= maxyear),
+            size=1) +
+  geom_hline(yintercept = 100, linetype="dashed") +
+  geom_vline(xintercept = iyear, linetype="dashed") +
+  scale_x_continuous(breaks=seq(0, 50, 1)) +
+  scale_y_continuous(name="Values indexed (Actual levy=100 in year 6)", breaks=seq(0, 1000, 10)) +
+  ggtitle("Actual tax levy and desired tax levy at different residential shares of tax base",
+          subtitle = "Scenario: Market shock, acquisition-value assessing") +
+  annotate("text", x = 12, y = 145, label = "Desired\nlevy", size=4) +
+  theme_bw() +
+  theme(legend.title=element_blank())
+p  
+ggsave(paste0("./results/", "taxlevy_v_desired.png"), p, scale=1.3, width=7, height=6, units="in")
+
+
+
+
+maxyear <- 15
+ilevy %>%
+  # filter(runname %in% c("CA20", "CA20etrcap")) %>%
+  filter(year <= maxyear) %>%
+  filter(str_detect(runname, "etrcap")) %>%
+  filter(vname=="tax_levy") %>%
+  ggplot(aes(year, value, colour=runname)) +
+  geom_line(size=1) +
+  geom_line(aes(year, value, colour=vname), 
+            data=ilevy %>% filter(year <= maxyear, runname=="CA20", vname=="mv_total"),
+            size=1) +
+  geom_hline(yintercept = 100, linetype="dashed") +
+  geom_vline(xintercept = iyear, linetype="dashed") +
+  scale_x_continuous(breaks=seq(0, 50, 2)) +
+  scale_y_continuous(name="Values indexed to levy in year 6", breaks=seq(0, 1000, 10)) +
+  theme_bw()
 
 
 
