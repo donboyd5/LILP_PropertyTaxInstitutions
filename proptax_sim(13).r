@@ -12,6 +12,7 @@
 source(file.path(PROJHOME, "subprograms", "globals.r"))
 source(file.path(PROJHOME, "subprograms", "libraries.r"))
 source(file.path(PROJHOME, "subprograms", "functions.r"))
+source(file.path(PROJHOME, "subprograms", "functions_assessment_roll.r"))
 
 
 #****************************************************************************************************
@@ -22,97 +23,6 @@ source(file.path(PROJHOME, "subprograms", "functions.r"))
 #   getmva(mv, sale, av_grcap),
 #   times=200
 # )
-build_assessment_roll <- function(assume, globals, nprop){
-  # return data frame with data for a single scenario
-  
-  # unpack the needed globals
-  endyear <- globals$endyear # starting from year 1
-  burnyears <- globals$burnyears
-  totyears <- globals$totyears
-  years <- globals$years
-  iyears <- globals$iyears
-  
-  reassess <- create_cycle(assume$avcycle, assume$avcycle_startyear) # reassessment cycle -- 1 or 0
-  
-  mv_gr <- insert(growth_scenarios[[assume$mv_growth]] / 100, make_vec(.06))
-  
-  prop_base <- tibble(runname=assume$runname,
-                      year=years,
-                      index=iyears,
-                      reassess=reassess,
-                      gr_mv=mv_gr, # growth that occurs IN the current year, to the next
-                      cumgr_mv=cumprod(1 + c(0, head(gr_mv, -1))), # cumulative growth to the NEXT year 
-                      icumgr_mv=cumgr_mv / cumgr_mv[year==1]) # indexed to year 1
-  
-  # now create a database of properties -- work with matrices - rows = nprops, cols = years
-  
-  # matrices of market values (true) - later may update with stochastic growth
-  mmv_res_true <- matrix(rep(100 * prop_base$icumgr_mv, nprop),
-                         byrow=TRUE, nrow=nprop, ncol=totyears, 
-                         dimnames=list(1:nprop, years))
-  
-  #.. NON-RESIDENTIAL property -- VERY SIMPLE ----
-  nonres_mult <- (1 - assume$acqvalue_share) / assume$acqvalue_share
-  mmv_nonres <- mmv_res_true * nonres_mult
-  # mmv_total <- mmv_res_true + mmv_nonres
-  
-  #.. RESIDENTIAL property assessment ----
-  # matrix of sale indicators
-  set.seed(1234)
-  msale <- matrix(rbinom(nprop * totyears, 1, assume$sale_fraction), 
-                  nrow=nprop, ncol=totyears, 
-                  dimnames=list(1:nprop, years))
-  zero_years <- NULL
-  if(assume$salecycle_zbefore >= min(years)) zero_years <- min(years):(assume$salecycle_zbefore -1)
-  if(!is.null(zero_years)) msale[, as.character(zero_years)] <- 0
-  
-  # colMeans()
-  # [1:10, 1:5]
-  # matrix of mv on the assessment roll, based on cycle
-  mmvar_cycle <- matrix(NA, nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))
-  mmvar_cycle[, 1:assume$armv_lag] <- mmv_res_true[, rep(1, assume$armv_lag)] # fill the initial lags with firstyear mv
-  
-  # matrix of aquisition market values - if there is a sale use market values, if not use prior plus growth
-  # note that this is an "on the assessment roll" concept meaning it can be lagged relative to true market values
-  # use lesser of grown prior amv or the mv
-  mmvar_acquisition <- matrix(NA, nrow=nprop, ncol=totyears, dimnames=list(1:nprop, years))
-  mmvar_acquisition[, 1:assume$armv_lag] <- mmv_res_true[, rep(1, assume$armv_lag)] # fill the initial lags with first of mv
-  # mmvar_acquisition[, 1:assume$armv_lag] <- mmv_res_true[, 1:assume$armv_lag] # fill the initial lags with initial years of mv
-  
-  # fill the residential cycle and acquisition values
-  for(j in (assume$armv_lag + 1):totyears){
-    mmvar_cycle[, j] <- ifelse(reassess[j]==1, 
-                               mmv_res_true[, j - assume$armv_lag], 
-                               mmvar_cycle[, j - 1])
-    
-    mmvar_acquisition[, j] <- ifelse(msale[, j]==1,
-                                     mmv_res_true[, j - assume$armv_lag], 
-                                     pmin(mmv_res_true[, j - assume$armv_lag], mmvar_acquisition[, j - 1] * (1 +  assume$av_grcap)))
-    if(assume$fastdown==1) mmvar_acquisition[, j] <- pmin(mmvar_acquisition[, j], mmv_res_true[, j - 1]) # forces fast downward reassessment
-  }
-  # mmv_res_true[1:8, 1:10]
-  # msale[1:8, 1:10]
-  # mmvar_acquisition[1:8, 1:10]
-  
-  # CAUTION: mvar is market value on the assessment roll -- it can be greater than true market value 
-  # because there can be lags
-  mdf <- bind_rows(as_tibble(mmv_res_true) %>% mutate(vname="mv_res_true", propid=row_number()),
-                   as_tibble(mmv_nonres) %>% mutate(vname="mv_nonres", propid=row_number()),
-                   as_tibble(mmvar_cycle) %>% mutate(vname="mvar_cycle", propid=row_number()),
-                   as_tibble(msale) %>% mutate(vname="sale", propid=row_number()),
-                   as_tibble(mmvar_acquisition) %>% mutate(vname="mvar_acquisition", propid=row_number())) %>%
-    gather(year, value, -propid, -vname) %>%
-    mutate(year=as.integer(year)) %>%
-    spread(vname, value)
-  
-  prop_all <- prop_base  %>%
-    right_join(mdf, by="year") %>%
-    select(runname, propid, year, index, sale, reassess, gr_mv, icumgr_mv, mv_nonres, mv_res_true, mvar_cycle, mvar_acquisition)
-  
-  return(prop_all)
-}
-
-
 
 
 #****************************************************************************************************
@@ -147,11 +57,10 @@ rcfn <- "Boyd LILP PropertyTaxInstitutions(6).xlsx"
 rcpath <- paste0(rcdir, rcfn)
 
 
-(rc <- read_excel(rcpath, sheet="run_control", skip = 3))
+(rc <- read_excel(rcpath, sheet="run_control", skip = 4))
 
 # for test purposes, pick a row
-assume <- as.list(rc[1, ])
-assume
+(assume <- as.list(rc[1, ]))
 
 
 #****************************************************************************************************
@@ -160,7 +69,7 @@ assume
 
 a <- proc.time()
 avroll <- rc %>%
-  rowwise() %>% 
+  rowwise() %>% # each row is a scenario
   do(build_assessment_roll(as.list(.), globals, 1000)) %>%
   ungroup
 b <- proc.time()

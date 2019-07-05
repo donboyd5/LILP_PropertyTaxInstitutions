@@ -12,7 +12,7 @@ source(file.path(PROJHOME, "subprograms", "functions.r"))
 
 
 #****************************************************************************************************
-#                case study states hpi and ptax ####
+#                Data: hpi and ptax ####
 #****************************************************************************************************
 hpfy <- readRDS("./data/hpfy.rds")
 glimpse(hpfy)
@@ -28,17 +28,128 @@ hpi_ptax <- left_join(hpfy, ptax) %>%
 glimpse(hpi_ptax)
 
 
+#.. Long-term United States line graph ----
+# prepare data
+# library("forecast")
+library("quantmod")
+# library("viridis")
+library("RColorBrewer")
+
+ustax <- slgfin %>%
+  filter(stabbr=="US", (level==3 & aggvar=="proptax") | (level==1 & aggvar %in% c("iit", "gst")), year %in% 1975:2016) %>%
+  select(year, vname=aggvar, value)
+
+ushpi <- hpfy %>%
+  filter(stabbr=="US", year <= 2016) %>%
+  mutate(vname="hpi") %>%
+  select(year, vname, value=hpi)
+
+gdppi <- getSymbols("A191RG3A086NBEA", src='FRED', auto.assign = FALSE) %>%
+  as.data.frame() %>%
+  mutate(date=row.names(.) %>% as.Date, year=year(date)) %>%
+  select(year, gdppi=A191RG3A086NBEA)
+
+rgdp <- getSymbols("GDPCA", src='FRED', auto.assign = FALSE) %>%
+  as.data.frame() %>%
+  mutate(date=row.names(.) %>% as.Date, year=year(date)) %>%
+  select(year, rgdp=GDPCA)
+
+pdata1 <- bind_rows(ustax, ushpi) %>%
+  left_join(gdppi) %>%
+  group_by(vname) %>%
+  mutate(rvalue=value * gdppi[year==2016] / gdppi) %>%
+  select(year, vname, rvalue) %>%
+  bind_rows(rgdp %>% mutate(vname="rgdp") %>% select(year, vname, rvalue=rgdp))
+
+# trend=loess(rvalue ~ year, span=.75)$fitted, detrend=rvalue - trend
+
+# get peak(-x, +y) years indexed to peak year
+ivalues <- function(vec, year, peak_year, minus, plus){
+  # vec and year are vectors of same length
+  # peak_year must be in year, as must peak_year - minus and peak_year + plus
+  # NO ERROR CHECKING
+  # returns a vector of length (peak_year - minus):(peak_year + plus)
+  if(length(vec) != length(year)) print("ERROR!!!")
+  # ystart <- year[peak_year - minus]
+  # yend <- year[peak_year + plus]
+  istart <- which(year==(peak_year - minus))
+  iend <- which(year==(peak_year + plus))
+  ivec <- vec / vec[year==peak_year] * 100
+  ivec <- ivec[istart:iend]
+  # df <- tibble(year=year[istart:iend], ivec=ivec)
+  return(ivec)
+}
+# ivalues(1:20, 2001:2020, 2007, 3, 5)
+tail(recessions) # let's use 1980, 1990, 2001, 2007
+getrecs <- function(df, minus, plus){
+  df2 <- tibble(iyear=-minus:plus,
+                rec1980=ivalues(df$rvalue, df$year, 1980, minus, plus),
+                rec1990=ivalues(df$rvalue, df$year, 1990, minus, plus),
+                rec2001=ivalues(df$rvalue, df$year, 2001, minus, plus),
+                rec2007=ivalues(df$rvalue, df$year, 2007, minus, plus))
+  return(df2)
+}
+pdata2 <- pdata1 %>%
+  group_by(vname) %>%
+  do(getrecs(., 4, 5)) %>%
+  gather(recyear, value, starts_with("rec")) %>%
+  mutate(recyear=str_sub(recyear, 4, 7) %>% as.integer)
+pdata2
+
+capt1 <- "\nSources: "
+capt2 <- "\nReal GDP and GDP price index (Bureau of Economic Analysis)"
+capt3 <- "\nHousing prices (Federal Housing Finance Agency, https://www.fhfa.gov/DataTools/Downloads/Pages/House-Price-Index-Datasets.aspx)"
+capt4 <- "\nTaxes (Bureau of the Census, Annual State and Local Government Finance Survey)"
+capt <- paste0(capt1, capt2, capt3, capt4)
+gtitle <- "GDP, housing prices, and major tax revenue sources in recent recessions"
+subt <- "All values adjusted for general price inflation"
+
+pal_djb <- c("black", brewer.pal(n = 4, name = "Dark2")) # this is good
+
+p <- pdata2 %>%
+  filter(iyear >=-2) %>%
+  mutate(longname=factor(vname, 
+                         levels=c("rgdp", "hpi", "iit", "gst", "proptax"), 
+                         labels=c("Real GDP", "Housing prices", "Individual income tax", "General sales tax", "Property taxes")),
+         recname=paste0("Recession starting in ", recyear)) %>%
+  group_by(longname) %>%
+  ggplot(aes(iyear, value, colour=longname, linetype=longname)) +
+  geom_line(size=1.2) +
+  # geom_point() +
+  geom_hline(yintercept = 100, linetype="dashed") +
+  geom_vline(xintercept = 0, linetype="dotted") +
+  scale_x_continuous(name="Year (Recession start=0)", breaks=-10:10) +
+  scale_y_continuous(name="Index (Recession start=100)", breaks=seq(-100, 300, 20), limits=c(NA, NA)) +
+  # scale_colour_manual(values=c("blue", "red", "forestgreen", "cyan", "purple")) +
+  # scale_color_viridis(discrete = TRUE, option = "E") +
+  # scale_color_brewer(palette = "Set1") +
+  scale_colour_manual(values=pal_djb) +
+  scale_linetype_manual(values=c(rep("solid", 4), "dashed")) + 
+  ggtitle(gtitle, subtitle=subt) +
+  facet_wrap(~recname, ncol=2) +
+  theme_bw() +
+  theme(legend.title=element_blank()) +
+  labs(caption=capt) +
+  theme(plot.caption = element_text(hjust=0, size=8))
+p
+ggsave(paste0("./results/", "US_longterm_hpi_ptax.png"), p, scale=1.3, width=7, height=6, units="in")
+
+
+#.. Line graph case-study states and US ----
 levs <- c("US", "CA", "FL", "MA", "NH", "OH")
 labs <- c("United States", state.name)[match(levs, c("US", state.abb))]
 cbind(levs, labs)
-capt1 <- "\nSources: Housing prices (Federal Housing Finance Agency, https://www.fhfa.gov/DataTools/Downloads/Pages/House-Price-Index-Datasets.aspx)"
-capt2 <- "\nProperty tax (Bureau of the Census, Annual State and Local Government Finance Survey)"
-capt3 <- "\nNote: Property tax values for 2001 and 2003 were missing, and were constructed by interpolation"
-capt <- paste0(capt1, capt2, capt3)
+capt1 <- "\nSources: "
+capt2 <- "\nGDP price index (Bureau of Economic Analysis)"
+capt3 <- "\nHousing prices (Federal Housing Finance Agency, https://www.fhfa.gov/DataTools/Downloads/Pages/House-Price-Index-Datasets.aspx)"
+capt4 <- "\nProperty taxes (Bureau of the Census, Annual State and Local Government Finance Survey)"
+capt <- paste0(capt1, capt2, capt3, capt4)
 gtitle <- "Housing prices and property tax revenue in the U.S. and in case-study states"
+subt <- "All values adjusted for general price inflation"
 
 p <- hpi_ptax %>%
   filter(year %in% 2000:2016, stabbr %in% levs) %>%
+  mutate(value=value * gdppi$gdppi[gdppi$year==2016] / gdppi$gdppi[match(year, gdppi$year)]) %>%
   mutate(stname=factor(stabbr, levels=levs, labels=labs),
          longname=factor(vname, 
                          levels=c("hpi", "proptax"), 
@@ -50,6 +161,7 @@ p <- hpi_ptax %>%
                       (value[match(year + 1, year)] + value[match(year - 1, year)]) / 2,
                       value)) %>%
   mutate(ivalue=value / value[year==2007] * 100) %>%
+  filter(year %in% 2002:2016) %>%
   ggplot(aes(year, ivalue, colour=longname)) +
   geom_line() +
   geom_point() +
@@ -58,7 +170,7 @@ p <- hpi_ptax %>%
   scale_x_continuous(name=NULL, breaks=seq(2000, 2030, 2)) +
   scale_y_continuous(name="Index (2007=100)", breaks=seq(-100, 300, 20), limits=c(NA, NA)) +
   scale_colour_manual(values=c("blue", "red")) +
-  ggtitle(gtitle) +
+  ggtitle(gtitle, subtitle=subt) +
   facet_wrap(~stname, ncol=2) +
   theme_bw() +
   theme(legend.title=element_blank()) +
@@ -93,6 +205,7 @@ pt_troughyears <- 2009:2014
 
 peaktrough <- hpi_ptax %>%
   filter(year %in% all_years) %>%
+  mutate(value=value * gdppi$gdppi[gdppi$year==2016] / gdppi$gdppi[match(year, gdppi$year)]) %>%
   spread(vname, value) %>%
   group_by(stabbr) %>%
   summarise(hpi_peak=getmaxyear(hpi, year, hpi_peakyears),
@@ -108,15 +221,22 @@ peaktrough %>% filter(stabbr=="AL")
 ptchange <- peaktrough %>%
   mutate(hpi_pch=hpi_trough_val / hpi_peak_val * 100 - 100,
          rpt_pch=rpt_trough_val / rpt_peak_val * 100 - 100,
-         diff=rpt_pch - hpi_pch)
+         diff=rpt_pch - hpi_pch,
+         peaklag=rpt_peak - hpi_peak,
+         troughlag=rpt_trough - hpi_trough)
+
+ptchange %>%
+  arrange(diff) %>%
+  write_csv("./results/ptresilience.csv")
 
 ptchange %>%
   arrange(diff) %>%
   ht(10)
 
 ptchange %>%
-  arrange(diff) %>%
-  write_csv("./results/ptresilience.csv")
+  arrange(peaklag) %>%
+  ht(10)
+
 
 #.. Scatterplot with the peak-trough changes ----
 pdata <- ptchange %>%
@@ -127,10 +247,17 @@ pdata <- ptchange %>%
          css=factor(css, levels=c("css", "other", "US"), labels=c("Case study state", "Other states", "US average")))
 
 # lims <- c(NA, NA)
-capt1 <- "\nSources: Housing prices (Federal Housing Finance Agency, https://www.fhfa.gov/DataTools/Downloads/Pages/House-Price-Index-Datasets.aspx)"
+capt1 <- "\nSources: Housing prices (Federal Housing Finance Agency,\nhttps://www.fhfa.gov/DataTools/Downloads/Pages/House-Price-Index-Datasets.aspx)"
 capt2 <- "\nProperty tax (Bureau of the Census, Annual State and Local Government Finance Survey)"
 capt <- paste0(capt1, capt2)
-ylims <- c(-29, 0)
+
+capt1 <- "\nSources: "
+capt2 <- "\nGDP price index (Bureau of Economic Analysis)"
+capt3 <- "\nHousing prices (Federal Housing Finance Agency, https://www.fhfa.gov/DataTools/Downloads/Pages/House-Price-Index-Datasets.aspx)"
+capt4 <- "\nProperty taxes (Bureau of the Census, Annual State and Local Government Finance Survey)"
+capt <- paste0(capt1, capt2, capt3, capt4)
+
+ylims <- c(-37, 0)
 xlims <- c(-60, 1)
 p <- pdata %>%
   ggplot(aes(x=hpi_pch, y=rpt_pch, label=stabbr, colour=css)) +
@@ -140,11 +267,12 @@ p <- pdata %>%
   scale_y_continuous(name="% change in property tax revenue, peak to trough", breaks=seq(-100, 100, 5), limits=ylims) +
   geom_hline(yintercept = median(ptchange$rpt_pch[ptchange$stabbr!="US"]), linetype="dashed") +
   geom_vline(xintercept = median(ptchange$hpi_pch[ptchange$stabbr!="US"]), linetype="dashed") +
+  geom_hline(yintercept = 0, linetype="solid", size=.35) +
   geom_abline(slope=1, intercept=0) +
-  ggtitle(label="Peak to trough change in housing prices and property tax revenue",
+  ggtitle(label="Peak to trough change in inflation-adjusted housing prices and property tax revenue",
           subtitle="Dashed lines show medians") +
-  annotate("text", x = -3, y = -28, label = "Below diagonal:\nProperty tax\nfell by more than\nhousing prices", size=3.4) +
-  annotate("text", x = -29, y = -14, label = "Above diagonal:\nProperty tax\nfell by less than\nhousing prices", size=3.4) +
+  annotate("text", x = -3, y = -22, label = "Below diagonal:\nProperty tax\nfell by more than\nhousing prices", size=3.4) +
+  annotate("text", x = -32, y = -22, label = "Above diagonal:\nProperty tax\nfell by less than\nhousing prices", size=3.4) +
   theme_bw() +
   theme(legend.title=element_blank()) +
   labs(caption=capt) +
