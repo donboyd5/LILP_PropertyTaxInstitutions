@@ -90,7 +90,7 @@ glimpse(avroll)
 
 avroll_sum <- avroll %>% 
   group_by(runname, year) %>%
-  summarise_at(vars(starts_with("mvtrue"), sale_year, starts_with("av_acq"), reassess_year, av_cycle),
+  summarise_at(vars(starts_with("mvtrue"), av_acquisition_sale_year, starts_with("av_acq"), reassess_year, av_cycle),
                ~sum(., na.rm=TRUE)) %>%
   mutate(av_total=av_acquisition + av_cycle) %>%
   ungroup

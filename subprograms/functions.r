@@ -33,6 +33,14 @@ create_cycle <- function(clength, cstart, zbefore=NULL){
   if(hasArg(zbefore)) cycle[which(globals$years < zbefore)] <- 0
   return(cycle)
 }
+# clength <- 3
+# cstart <- 1
+# create_cycle(3, 1)
+
 # create_cycle(7, 40)
 # create_cycle(7, 5, zbefore=5)
+
+# zero_years <- NULL
+# if(assume$salecycle_zbefore >= min(years)) zero_years <- min(years):(assume$salecycle_zbefore -1)
+# if(!is.null(zero_years)) msale[, as.character(zero_years)] <- 0
 
