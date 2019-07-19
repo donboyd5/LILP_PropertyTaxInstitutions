@@ -9,7 +9,7 @@ globals <- within(globals,{
   totyears <- endyear + burnyears
   years <- (-burnyears+1):endyear
   iyears <- 1:totyears; names(iyears) <- years
-  css <- c("CA", "FL", "MA", "NH", "OH") # case-study states
+  css <- c("CA", "FL", "MA", "NH", "PA") # case-study states
 })
 # globals
 # globals$rcdir <- "data"

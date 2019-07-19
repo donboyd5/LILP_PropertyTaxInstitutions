@@ -37,7 +37,8 @@ greatrec %>%
   filter(stabbr %in% c(globals$css, "US")) %>%
   ggplot(aes(year, pch, colour=stabbr)) +
   geom_line() +
-  geom_point()
+  geom_point() +
+  geom_hline(yintercept = 0)
 # looks like years 2003:2017 (15 years) is about right
 
 greatrec_scenarios <- greatrec %>%
@@ -58,35 +59,33 @@ rcpath <- paste0(rcdir, rcfn)
 
 
 (rc <- read_excel(rcpath, sheet="run_control", skip = 4))
-
 # for test purposes, pick a row
 # (assume <- as.list(rc[1, ]))
-
-# tmp <- build_assessment_roll(assume, globals, growth_scenarios, 10)
-
-
 
 #****************************************************************************************************
 #                build assessment roll data ####
 #****************************************************************************************************
 rcuse <- rc %>%
   filter(include==1)
-rcuse
+# rcuse
 rcuse$runname
+(assume <- as.list(rcuse[1, ]))
 
 a <- proc.time()
 avroll <- rcuse %>%
   rowwise() %>% # each row is a scenario
-  do(build_assessment_roll(as.list(.), globals, growth_scenarios, 1000)) %>%
+  do(build_assessment_roll(as.list(.), globals, growth_scenarios)) %>%
   ungroup
 b <- proc.time()
 b - a
 # ht(avroll)
+avroll %>%
+  group_by(ptype) %>%
+  summarise(n=n() / 61)
 
 
 #.. create summary of assessment roll ----
 glimpse(avroll)
-
 
 avroll_sum <- avroll %>% 
   group_by(runname, year) %>%
@@ -103,6 +102,7 @@ avroll_sum %>%
   gather(vname, value, -year, -runname) %>%
   ggplot(aes(year, value, colour=vname)) +
   geom_line() +
+  geom_hline(yintercept = 100) +
   facet_wrap(~runname)
 
 avroll_sum %>%
@@ -122,6 +122,18 @@ avroll_sum %>%
   scale_x_continuous(breaks=seq(0, 30, 2)) +
   scale_y_continuous(breaks=seq(0, 200, 5)) +
   geom_hline(yintercept = 100)
+
+
+#.. construct measures of volatility and rise and fall ----
+avroll_sum %>%
+  filter(year %in% 1:20) %>%
+  select(runname, year, mvtrue, av_total) %>%
+  gather(vname, value, -runname, -year) %>%
+  arrange(runname, vname, year) %>%
+  group_by(runname, vname) %>%
+  mutate(pch=value / lag(value) * 100 - 100) %>%
+  summarise(vol=sd(pch, na.rm=TRUE)) %>%
+  spread(vname, vol)
 
 
 

@@ -42,15 +42,21 @@ hpi_ptax <- left_join(hpfy, ptax) %>%
   gather(vname, value, hpi, proptax)
 glimpse(hpi_ptax)
 
-gdppi <- getSymbols("A191RG3A086NBEA", src='FRED', auto.assign = FALSE) %>%
-  as.data.frame() %>%
-  mutate(date=row.names(.) %>% as.Date, year=year(date)) %>%
-  select(year, gdppi=A191RG3A086NBEA)
+# gdppi <- getSymbols("A191RG3A086NBEA", src='FRED', auto.assign = FALSE) %>%
+#   as.data.frame() %>%
+#   mutate(date=row.names(.) %>% as.Date, year=year(date)) %>%
+#   select(year, gdppi=A191RG3A086NBEA)
+# saveRDS(gdppi, "./data/gdppi.rds")
+gdppi <- readRDS("./data/gdppi.rds")
 
-rgdp <- getSymbols("GDPCA", src='FRED', auto.assign = FALSE) %>%
-  as.data.frame() %>%
-  mutate(date=row.names(.) %>% as.Date, year=year(date)) %>%
-  select(year, rgdp=GDPCA)
+
+# rgdp <- getSymbols("GDPCA", src='FRED', auto.assign = FALSE) %>%
+#   as.data.frame() %>%
+#   mutate(date=row.names(.) %>% as.Date, year=year(date)) %>%
+#   select(year, rgdp=GDPCA)
+# saveRDS(rgdp, "./data/rgdp.rds")
+rgdp <- readRDS("./data/rgdp.rds")
+
 
 ustax <- slgfin %>%
   filter(stabbr=="US", (level==3 & aggvar=="proptax") | (level==1 & aggvar %in% c("iit", "gst")), year %in% 1975:2016) %>%
@@ -68,7 +74,7 @@ ushpi <- hpfy %>%
 #.. U.S. recessions faceted time-series plots ----
 # prepare data
 pdata1 <- bind_rows(ustax, ushpi) %>%
-  left_join(gdppi) %>%
+  left_join(gdppi, by="year") %>%
   group_by(vname) %>%
   # mutate(rvalue=value * gdppi[year==2016] / gdppi) %>%
   mutate(rvalue=make_real(value, year, 2016)) %>%
@@ -150,7 +156,9 @@ ggsave(paste0("./results/", "US_longterm_hpi_ptax.png"), p, scale=1.3, width=7, 
 
 
 #.. Line graph case-study states and US ----
-levs <- c("US", "CA", "FL", "MA", "NH", "OH")
+# levs <- c("US", "CA", "FL", "MA", "NH", "OH")
+# levs <- c("US", "CA", "FL", "MA", "NH", "RI")
+levs <- c("US", "CA", "FL", "MA", "NH", "PA")
 labs <- c("United States", state.name)[match(levs, c("US", state.abb))]
 cbind(levs, labs)
 capt1 <- "\nSources: "
