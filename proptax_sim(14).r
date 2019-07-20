@@ -9,8 +9,9 @@
 #****************************************************************************************************
 #                setup ####
 #****************************************************************************************************
-source(file.path(PROJHOME, "subprograms", "globals.r"))
 source(file.path(PROJHOME, "subprograms", "libraries.r"))
+
+source(file.path(PROJHOME, "subprograms", "globals.r"))
 source(file.path(PROJHOME, "subprograms", "functions.r"))
 source(file.path(PROJHOME, "subprograms", "functions_assessment_roll.r"))
 
@@ -69,6 +70,7 @@ rcuse <- rc %>%
   filter(include==1)
 # rcuse
 rcuse$runname
+rcuse$avcycle_baseyear
 (assume <- as.list(rcuse[1, ]))
 
 a <- proc.time()
@@ -103,7 +105,8 @@ avroll_sum %>%
   ggplot(aes(year, value, colour=vname)) +
   geom_line() +
   geom_hline(yintercept = 100) +
-  facet_wrap(~runname)
+  scale_x_continuous(breaks=seq(0, 40, 2)) +
+  facet_wrap(~runname, ncol=1)
 
 avroll_sum %>%
   filter(year %in% 1:20) %>%

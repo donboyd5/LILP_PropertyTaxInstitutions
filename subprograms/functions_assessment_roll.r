@@ -93,7 +93,7 @@ get_sale_years_binomial <- function(mat, globals, avg_years_between_sale){
 }
 
 
-get_sale_years_alternating <- function(mat, globals, avg_years_between_sale){
+get_sale_years_deterministic <- function(mat, globals, avg_years_between_sale){
   # get a matrix of sale indicators indicating whether a property has been sold or not (1 or 0)
   # mat is the matrix upon which to base the new matrix, m_sale_year
   # rows: 1 per property
@@ -104,7 +104,7 @@ get_sale_years_alternating <- function(mat, globals, avg_years_between_sale){
   # and determination of sale years could change, too
   # thus I keept this general, allowing 2 different matrices, 1 for acquisition and 1 for cycle assessing
   
-  # simple alternating matrix
+  # simple deterministic alternating matrix
   nprop <- nrow(mat)
   m_sale_year <- get_mat(mat)
   
@@ -119,7 +119,7 @@ get_sale_years_alternating <- function(mat, globals, avg_years_between_sale){
 
 get_acquisition_values <- function(assume, mv_list, globals){
 
-  m_av_acquisition_sale_year <- get_sale_years_alternating(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
+  m_av_acquisition_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
 
   
   # matrix of aquisition value ceilings and matrix of acquisition values used on AR
@@ -151,25 +151,56 @@ get_acquisition_values <- function(assume, mv_list, globals){
   return(acquisition_val_list)
 }
 
+get_previous_reassessment_year <- function(reassess_years){
+  # for each year, get the index in 1:globals$totyears of the latest previous reassessment year
+  i_reassess_years <- which(reassess_years==1) # indexes of the reassessment years
+  ii_prior <- findInterval(1:length(reassess_years), i_reassess_years + 1e-10) # indexes of those indexes that came sooner, EXCEPT THAT...
+  # ... we need to fix any initial indexes which were set to zero - we'll set to NA instead
+  ii_prior <- ifelse(ii_prior==0, NA, ii_prior)
+  i_prior <- i_reassess_years[ii_prior]
+  names(i_prior) <- names(reassess_years)
+  return(i_prior)
+}
+
+# v_reassess_year
+# get_previous_reassessment_year(v_reassess_year)
 
 get_assessment_cycle_values <- function(assume, mv_list, globals){
   v_reassess_year <- create_cycle(assume$avcycle_nyears, assume$avcycle_startyear) # reassessment cycle -- 1 or 0
+  v_prior_reassess_year <- get_previous_reassessment_year(v_reassess_year)
+  baseyear_ratio <- mv_list$v_icum_mvgr[v_prior_reassess_year] / mv_list$v_icum_mvgr
   
-  if(assume$avcycle_salemethod=="alternating"){
-    m_av_cycle_sale_year <- get_sale_years_alternating(mv_list$m_mvtrue_cycle, globals, assume$salecycle_nyears)
+  # determine the years in which properties are sold - either deterministically or by a random method
+  if(assume$avcycle_salemethod=="deterministic"){ # sales are deterministic
+    m_av_cycle_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_cycle, globals, assume$salecycle_nyears)
   } else if(assume$avcycle_salemethod=="binomial"){
     m_av_cycle_sale_year <- get_sale_years_binomial(mv_list$m_mvtrue_cycle, globals, assume$salecycle_nyears)
   }
   
-  # matrix of mv on the assessment roll, based on cycle
-  m_av_cycle <- get_mat(mv_list$m_mvtrue_cycle)
-  m_av_cycle[, 1:assume$armv_lag] <- mv_list$m_mvtrue_cycle[, rep(1, assume$armv_lag)] # fill the initial lags with firstyear mv
+  # create matrix of assessed values and fill years in the lag period with mv for first year
+  # (the lag period is the lag between the actual market value and when it shows on the assessment roll, due to admin lags)
+  m_av_cycle <- get_mat(mv_list$m_mvtrue_cycle)  # get empty matrix of proper dimensions
+  m_av_cycle[, 1:assume$avcycle_armv_lag] <- mv_list$m_mvtrue_cycle[, rep(1, assume$avcycle_armv_lag)]
   
-  for(year in (assume$armv_lag + 1):globals$totyears){
-    m_av_cycle[, year] <- 
-      case_when(v_reassess_year[year]==1  ~        mv_list$m_mvtrue_cycle[, year - assume$armv_lag], # reassessment year
-                m_av_cycle_sale_year[, year]==1 ~  mv_list$m_mvtrue_cycle[, year], # sale
-                TRUE ~                             m_av_cycle[, year - 1]) # neither
+  # loop through years after the initial lag period
+  for(year in (assume$avcycle_armv_lag + 1):globals$totyears){
+    if(v_reassess_year[year]==1) {
+      # use lagged mv in reassessment years
+      m_av_cycle[, year] <- mv_list$m_mvtrue_cycle[, year - assume$avcycle_armv_lag]
+      } else { # not a reassessment year, so...
+        sale_indexes <- which(m_av_cycle_sale_year[, year]==1)
+        not_sale_indexes <- which(m_av_cycle_sale_year[, year]==0)
+        
+        # get lagged assessed values if NOT a sale year
+        m_av_cycle[not_sale_indexes, year] <- m_av_cycle[not_sale_indexes, year - 1]
+        
+        # now deal with the complicated case of sale years, which depends upon the policy
+        if(assume$avcycle_baseyear==0) {
+          m_av_cycle[sale_indexes, year] <- mv_list$m_mvtrue_cycle[sale_indexes, year]
+        } else if(assume$avcycle_baseyear==1) { # if the jurisdiction uses base-year assessing, adjust the mv back to the base year
+            m_av_cycle[sale_indexes, year] <- m_av_cycle[sale_indexes, year] * baseyear_ratio[year]
+        } # end of the treatment of sale years
+      }
   }
   
   assessment_cycle_val_list <- list()
@@ -180,6 +211,10 @@ get_assessment_cycle_values <- function(assume, mv_list, globals){
   })
   return(assessment_cycle_val_list)
 }
+
+
+# define values for testing:
+# (assume <- as.list(rcuse[1, ]))
 
 
 build_assessment_roll <- function(assume, globals, growth_scenarios){

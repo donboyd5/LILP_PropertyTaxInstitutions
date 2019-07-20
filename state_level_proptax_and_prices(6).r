@@ -263,7 +263,7 @@ ptchange %>%
   ht(10)
 
 ptchange %>%
-  arrange(peaklag) %>%
+  arrange(rpt_peaklag) %>%
   ht(10)
 
 
