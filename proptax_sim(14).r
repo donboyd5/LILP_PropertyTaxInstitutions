@@ -1,8 +1,7 @@
 
 # TODO: fix mvar_cycle so that it picks up sales more quickly! (I think)
-# - cycle
-# - lag
-# - portable
+# - scale av in year1 to pct of mv in year1
+# - acqval portable
 # - 
 
 
@@ -70,8 +69,8 @@ rcuse <- rc %>%
   filter(include==1)
 # rcuse
 rcuse$runname
-rcuse$avcycle_baseyear
-(assume <- as.list(rcuse[1, ]))
+# rcuse$avcycle_baseyear
+# (assume <- as.list(rcuse[1, ]))
 
 a <- proc.time()
 avroll <- rcuse %>%
@@ -81,9 +80,12 @@ avroll <- rcuse %>%
 b <- proc.time()
 b - a
 # ht(avroll)
-avroll %>%
-  group_by(ptype) %>%
-  summarise(n=n() / 61)
+# count(avroll, runname)
+# avroll %>%
+#   group_by(ptype) %>%
+#   summarise(n=n() / 61)
+
+avroll %>% filter(runname=="CA_rules_USGR_20ysale") %>% write_csv("d:/temp/temp.csv")
 
 
 #.. create summary of assessment roll ----
@@ -91,12 +93,15 @@ glimpse(avroll)
 
 avroll_sum <- avroll %>% 
   group_by(runname, year) %>%
-  summarise_at(vars(starts_with("mvtrue"), av_acquisition_sale_year, starts_with("av_acq"), reassess_year, av_cycle),
+  mutate(numrec=1) %>%
+  summarise_at(vars(numrec,
+                    starts_with("mvtrue"),
+                    reassess_year, av_cycle_sale_year, av_cycle,
+                    av_acquisition_sale_year, av_acquisition_ceiling, av_acquisition),
                ~sum(., na.rm=TRUE)) %>%
   mutate(av_total=av_acquisition + av_cycle) %>%
   ungroup
 ht(avroll_sum)
-
 
 avroll_sum %>%
   filter(year %in% 1:20) %>%
@@ -106,11 +111,11 @@ avroll_sum %>%
   geom_line() +
   geom_hline(yintercept = 100) +
   scale_x_continuous(breaks=seq(0, 40, 2)) +
-  facet_wrap(~runname, ncol=1)
+  facet_wrap(~runname, ncol=2)
 
 avroll_sum %>%
   filter(year %in% 1:20) %>%
-  filter(str_sub(runname, 3, 3)!="_") %>%
+  # filter(str_sub(runname, 3, 3)!="_") %>%
   select(year, runname, av_total) %>%
   ggplot(aes(year, av_total, colour=runname)) +
   geom_line() +
@@ -139,37 +144,44 @@ avroll_sum %>%
   spread(vname, vol)
 
 
+tmp <- avroll %>%
+  filter(str_detect(runname, "FL_rules_USGR_20ysale"), ptype!="cycle") %>%
+  select(-contains("cycle"))
+
+
 
 #****************************************************************************************************
 #                determine tax levies ####
 #****************************************************************************************************
 # mvar is market value on the assessment roll - for now create it here
+glimpse(avroll_sum)
 avroll_sum_pch <- avroll_sum %>%
   arrange(runname, year) %>%
   group_by(runname) %>%
-  mutate_at(vars(-runname, -year, -sale), list(pch= ~. / lag(.) * 100 - 100))
+  mutate_at(vars(-runname, -year, -numrec, -reassess_year, -av_cycle_sale_year, -av_acquisition_sale_year),
+            list(pch= ~. / lag(.) * 100 - 100))
 
 count(avroll_sum_pch, runname)
 avroll_sum_pch  %>%
-  select(runname, year, sale, contains("pch")) %>%
-  filter(year <= 15, runname=="CA_rules_USGR_20psale")
+  select(runname, year, av_acquisition_sale_year, contains("pch")) %>%
+  filter(year <= 15, runname=="CA_rules_USGR_20ysale")
 
 # calculate cagr in mmv_res_true, to use as desired tax growth rate
 mv_cagr <- avroll_sum_pch %>%
   group_by(runname) %>%
   arrange(year) %>%
-  summarise(mvfirst=first(mv_total), mvlast=last(mv_total), nyears=max(year) - min(year)) %>%
+  summarise(mvfirst=first(mvtrue), mvlast=last(mvtrue), nyears=max(year) - min(year)) %>%
   mutate(mvcagr=(mvlast / mvfirst)^(1 / nyears) - 1)
 mv_cagr
 
 taxlevy <- avroll_sum_pch %>%
   filter(year >= 1) %>%
-  left_join(rc %>% select(runname, mvetr_init, mvetr_cap), by="runname") %>%
+  left_join(rc %>% select(runname, starts_with("taxlim")), by="runname") %>%
   group_by(runname) %>%
-  mutate(tax_desired=mv_total[year==1] * 
-           mvetr_init[year==1] * 
+  mutate(tax_desired=mvtrue[year==1] * 
+           taxlim_mvetr_init[year==1] * 
            (1 + mv_cagr$mvcagr[mv_cagr$runname==runname[1]])^(year - 1),
-         tax_cap=ifelse(mvetr_cap==1, tax_desired, mvar_total * mvetr_cap),
+         tax_cap=ifelse(taxlim_mvetr_cap==1, tax_desired, av_total * taxlim_mvetr_cap),
     tax_levy=pmin(tax_desired, tax_cap))
 
 
@@ -195,12 +207,12 @@ taxlevy <- avroll_sum_pch %>%
 #.. mv comparisons ----
 # do a nice graph, with values indexed either to year=6 (mv_true, tax_desired) or to their counterparts in the given year
 # (a) year 6 market value for assessment roll, and (b) year 6 levy
-iyear <- 6
+iyear <- 7
 ilevy <- taxlevy %>%
-  select(year, runname, mv_total, mvar_total, tax_desired, tax_cap, tax_levy) %>%
+  select(year, runname, mvtrue, av_total, tax_desired, tax_cap, tax_levy) %>%
   group_by(runname) %>%
-  mutate(mvtemp=mv_total, taxtemp=tax_levy) %>%
-  mutate_at(vars(mv_total, mvar_total), ~. / mvtemp[year==iyear] * 100) %>%
+  mutate(mvtemp=mvtrue, taxtemp=tax_levy) %>%
+  mutate_at(vars(mvtrue, av_total), ~. / mvtemp[year==iyear] * 100) %>%
   mutate_at(vars(tax_desired, tax_cap, tax_levy), ~ . / taxtemp[year==iyear] * 100) %>%
   select(-contains("temp")) %>%
   gather(vname, value, -runname, -year) %>%
@@ -217,14 +229,14 @@ count(ilevy, runname)
 maxyear <- 15
 
 # make a graph with California rules two different turnover rates
-xa <- expression(vname=="mvar_total" & str_detect(runname, "CA_rules_"))
-xb <- expression(vname=="mv_total" & runname=="CA_rules_USGR_5psale")
-levs <- c("mv_total", "CA_rules_USGR_5psale", "CA_rules_USGR_20psale")
-labs <- c("Market value", "Assessed value\n5% annual turnover", "Assessed value\n20% annual turnover")
+xa <- expression(vname=="av_total" & runname %in% c("CA_rules_USGR_20ysale_ran", "FL_rules_USGR_20ysale_acq100pct_ran"))
+xb <- expression(vname=="mvtrue" & runname=="CA_rules_USGR_20ysale_ran")
+levs <- c("mvtrue", "CA_rules_USGR_20ysale_ran", "FL_rules_USGR_20ysale_acq100pct_ran")
+labs <- c("Market value", "Assessed value\nCA rules 5% annual turnover", "Assessed value\nFL fules 5% annual turnover")
 pdata <- ilevy %>%
   filter(eval(xa) | eval(xb)) %>%
   rename(linelabel=runname) %>%
-  mutate(linelabel=ifelse(vname=="mv_total", vname, linelabel)) %>%
+  mutate(linelabel=ifelse(vname=="mvtrue", vname, linelabel)) %>%
   select(-vname) %>%
   mutate(linelabel=factor(linelabel, levels=levs, labels=labs)) %>%
   arrange(linelabel)
@@ -236,7 +248,7 @@ pca <- pdata %>%
   geom_hline(yintercept = 100, linetype="dashed") +
   geom_vline(xintercept = iyear, linetype="dashed") +
   scale_x_continuous(breaks=seq(0, 50, 1)) +
-  scale_y_continuous(name="Values indexed (True market value=100 in year 6)", breaks=seq(0, 1000, 10)) +
+  scale_y_continuous(name="Values indexed (True market value=100 in year 6)", breaks=seq(0, 1000, 5)) +
   ggtitle("True market value and assessed market value at 5% and 20% turnover rates",
           subtitle = "Scenario: Market shock, California acquisition-value assessing") +
   theme_bw() +
@@ -245,6 +257,7 @@ pca <- pdata %>%
 pca 
 
 
+# djb got this far 7/22/2019 ----
 # now, exclude nonresidential from acquisition-value assessing, use 5% turnover
 xa <- expression(vname=="mvar_total" & str_detect(runname, "CA_") & str_detect(runname, "5psale"))
 xb <- expression(vname=="mv_total" & runname=="CA_rules_USGR_5psale")

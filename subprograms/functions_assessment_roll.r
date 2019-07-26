@@ -15,43 +15,38 @@ get_mv <- function(assume, growth_scenarios, globals){
   # split the mv of acquisition properties - for now - across 1 property sale year
   # split the mv of cycle properties - for now - across 1 property per cycle year
   
-  zpad_len <- 2 # for zero padding; maybe calculate based on nprop
+  # CAUTION: Make sure we don't allow an infinite # of properties!
+  nprop_avcycle <- assume$salecycle_nyears * assume$avcycle_nyears
+  if(assume$avcycle_salemethod != "deterministic") nprop_avcycle <- max(nprop_avcycle, assume$avcycle_nprop)
   
+  nprop_acquisition <- assume$salecycle_nyears
+  if(assume$acqvalue_salemethod != "deterministic") nprop_acquisition <- max(nprop_acquisition, assume$acqvalue_nprop)
+  
+  nprop <- nprop_avcycle + nprop_acquisition
+  
+  # zero padding for property ids
+  if(nprop > 1000) zpad_len <- 4 else zpad_len <- 3
+  
+  # market-value growth vectors:
   v_mvgr_to_next <- insert(growth_scenarios[[assume$mv_growth]] / 100, make_vec(.06)) # should we pass growth_scenarios as a target?
   
   # get cumulative growth rates, indexed to year 1
   v_icum_mvgr <- cumprod(1 + c(0, v_mvgr_to_next[-length(v_mvgr_to_next)])) # cumulative growth to the NEXT year, before indexing to year 1 
   names(v_icum_mvgr) <- names(v_mvgr_to_next) # otherwise names are WRONG and we use name indexing
   v_icum_mvgr <- v_icum_mvgr / v_icum_mvgr["1"]
-  
-  # matrices of market values (true) - later may update with stochastic growth
   v_mvtrue <- 100 * v_icum_mvgr
   
-  str_pad(1, 4, side="left", pad="0")
-  # m_mvtrue <- matrix(rep(100 * v_icum_mvgr, nprop),
-  #                    byrow=TRUE, nrow=nprop, ncol=globals$totyears, 
-  #                    dimnames=list(1:nprop, globals$years))
-  nprop_acquisition <- assume$salecycle_nyears
   m_mvtrue_acquisition <- matrix(rep(v_mvtrue * assume$acqvalue_share / nprop_acquisition, nprop_acquisition),
                                  byrow=TRUE, nrow=nprop_acquisition, ncol=globals$totyears,
                                  dimnames=list(paste0("acq_", str_pad(1:nprop_acquisition, zpad_len, side="left", pad="0")),
                                                globals$years))
   
-  # num properties = # of sale-cycle years, NOT
-  nprop_cycle <- max(assume$salecycle_nyears, assume$avcycle_nyears) # this could change!
-  if(assume$avcycle_nprop > 0) nprop_cycle <- assume$avcycle_nprop
-  m_mvtrue_cycle <- matrix(rep(v_mvtrue * (1 - assume$acqvalue_share) / nprop_cycle, nprop_cycle),
-                                 byrow=TRUE, nrow=nprop_cycle, ncol=globals$totyears,
-                                 dimnames=list(paste0("avcycle_", str_pad(1:nprop_cycle, zpad_len, side="left", pad="0")),
+  m_mvtrue_cycle <- matrix(rep(v_mvtrue * (1 - assume$acqvalue_share) / nprop_avcycle, nprop_avcycle),
+                                 byrow=TRUE, nrow=nprop_avcycle, ncol=globals$totyears,
+                                 dimnames=list(paste0("avcycle_", str_pad(1:nprop_avcycle, zpad_len, side="left", pad="0")),
                                                globals$years))
   
   m_mvtrue <- rbind(m_mvtrue_acquisition, m_mvtrue_cycle)
-  # rownames(m_mvtrue) <- NULL
-  # colSums(m_mvtrue)
-  
-  # matrices giving amount of mvtrue that is on acquisition assessing and amount on cycle assessing
-  # m_mvtrue_acquisition <- m_mvtrue * assume$acqvalue_share
-  # m_mvtrue_cycle <- m_mvtrue - m_mvtrue_acquisition
   
   # create the return list
   mv_list <- list()
@@ -118,8 +113,15 @@ get_sale_years_deterministic <- function(mat, globals, avg_years_between_sale){
 
 
 get_acquisition_values <- function(assume, mv_list, globals){
-
-  m_av_acquisition_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
+  
+  # determine the years in which properties are sold - either deterministically or by a random method
+  if(assume$avcycle_salemethod=="deterministic"){ # sales are deterministic
+    m_av_acquisition_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
+  } else if(assume$avcycle_salemethod=="binomial"){
+    m_av_acquisition_sale_year <- get_sale_years_binomial(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
+  }
+  
+  # m_av_acquisition_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
 
   
   # matrix of aquisition value ceilings and matrix of acquisition values used on AR
@@ -259,7 +261,7 @@ build_assessment_roll <- function(assume, globals, growth_scenarios){
                              prep_mat(av_acquisition_val_list$m_av_acquisition_sale_year))
   prop_matrices_wide <- prop_matrices %>%
     mutate(ptype=ifelse(str_detect(propid, "acq"), "acquisition", "cycle"),  
-           propid=as.numeric(str_extract(propid, "(\\d)+"))) %>%
+           propid=as.numeric(str_extract(propid, "(\\d)+"))) %>% # construct a numeric property id
     spread(vname, value)
   
   # str_sub(propid, 1, 3),
@@ -277,9 +279,10 @@ build_assessment_roll <- function(assume, globals, growth_scenarios){
     right_join(prop_matrices_wide, by="year") %>%
     select(runname, ptype, propid, year, index, 
            gr_to_next, icum_vmgr, 
-           mvtrue, mvtrue_acquisition, mvtrue_cycle,
-           av_acquisition_sale_year, av_acquisition_ceiling, av_acquisition, 
-           reassess_year, av_cycle, av_cycle_sale_year)
+           mvtrue, mvtrue_cycle, mvtrue_acquisition,
+           reassess_year, av_cycle_sale_year,  av_cycle,
+           av_acquisition_sale_year, av_acquisition_ceiling, av_acquisition
+           )
   
   return(prop_all)
 }
