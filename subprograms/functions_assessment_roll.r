@@ -16,11 +16,16 @@ get_mv <- function(assume, growth_scenarios, globals){
   # split the mv of cycle properties - for now - across 1 property per cycle year
   
   # CAUTION: Make sure we don't allow an infinite # of properties!
-  nprop_avcycle <- assume$salecycle_nyears * assume$avcycle_nyears
-  if(assume$avcycle_salemethod != "deterministic") nprop_avcycle <- max(nprop_avcycle, assume$avcycle_nprop)
+  if(assume$acqvalue_share < 1) {
+    nprop_avcycle <- assume$salecycle_nyears * assume$avcycle_nyears
+    if(assume$avcycle_salemethod != "deterministic") nprop_avcycle <- max(nprop_avcycle, assume$avcycle_nprop)
+  } else nprop_avcycle <- 0
   
-  nprop_acquisition <- assume$salecycle_nyears
-  if(assume$acqvalue_salemethod != "deterministic") nprop_acquisition <- max(nprop_acquisition, assume$acqvalue_nprop)
+  if(assume$acqvalue_share >0 ){
+    nprop_acquisition <- assume$salecycle_nyears
+    if(assume$acqvalue_salemethod != "deterministic") nprop_acquisition <- max(nprop_acquisition, assume$acqvalue_nprop)
+  } else nprop_acquisition <- 0
+  
   
   nprop <- nprop_avcycle + nprop_acquisition
   
@@ -36,17 +41,23 @@ get_mv <- function(assume, growth_scenarios, globals){
   v_icum_mvgr <- v_icum_mvgr / v_icum_mvgr["1"]
   v_mvtrue <- 100 * v_icum_mvgr
   
-  m_mvtrue_acquisition <- matrix(rep(v_mvtrue * assume$acqvalue_share / nprop_acquisition, nprop_acquisition),
-                                 byrow=TRUE, nrow=nprop_acquisition, ncol=globals$totyears,
-                                 dimnames=list(paste0("acq_", str_pad(1:nprop_acquisition, zpad_len, side="left", pad="0")),
-                                               globals$years))
+  m_mvtrue_cycle <- NULL
+  if(nprop_avcycle > 0){
+    m_mvtrue_cycle <- matrix(rep(v_mvtrue * (1 - assume$acqvalue_share) / nprop_avcycle, nprop_avcycle),
+                             byrow=TRUE, nrow=nprop_avcycle, ncol=globals$totyears,
+                             dimnames=list(paste0("avcycle_", str_pad(1:nprop_avcycle, zpad_len, side="left", pad="0")),
+                                           globals$years))
+  }
   
-  m_mvtrue_cycle <- matrix(rep(v_mvtrue * (1 - assume$acqvalue_share) / nprop_avcycle, nprop_avcycle),
-                                 byrow=TRUE, nrow=nprop_avcycle, ncol=globals$totyears,
-                                 dimnames=list(paste0("avcycle_", str_pad(1:nprop_avcycle, zpad_len, side="left", pad="0")),
-                                               globals$years))
+  m_mvtrue_acquisition <- NULL
+  if(nprop_acquisition > 0 ){
+    m_mvtrue_acquisition <- matrix(rep(v_mvtrue * assume$acqvalue_share / nprop_acquisition, nprop_acquisition),
+                                   byrow=TRUE, nrow=nprop_acquisition, ncol=globals$totyears,
+                                   dimnames=list(paste0("acq_", str_pad(1:nprop_acquisition, zpad_len, side="left", pad="0")),
+                                                 globals$years))
+  }
   
-  m_mvtrue <- rbind(m_mvtrue_acquisition, m_mvtrue_cycle)
+  m_mvtrue <- rbind(m_mvtrue_cycle, m_mvtrue_acquisition)
   
   # create the return list
   mv_list <- list()
@@ -69,13 +80,24 @@ prep_mat <- function(mat){
   mat_name <- deparse(substitute(mat)) %>%
     str_split(coll("$"), simplify = TRUE)
   mat_name <- mat_name[, ncol(mat_name)]
-  df <- as_tibble(mat, rownames="propid") %>%
-    mutate(vname=str_sub(mat_name, 3)) %>%
-    gather(year, value, -propid, -vname) %>%
-    mutate(year=as.integer(year))
+  vname <- str_sub(mat_name, 3)
+  if(str_detect(mat_name, "cycle")) propid="cycle" else
+    if((str_detect(mat_name, "acq"))) propid="acq"
+  
+  if(is.null(mat)) {
+    df <- tibble(vname=vname, propid=propid, year=0, value=NA_real_)
+  } else {
+    df <- as_tibble(mat, rownames="propid") %>%
+      mutate(vname=vname) %>%
+      gather(year, value, -propid, -vname) %>%
+      mutate(year=as.integer(year))
+    }
   return(df)
 }
 
+# prep_mat(av_cycle_list$m_av_cycle)
+# mat <- NULL
+# deparse(substitute(mat)) 
 
 get_sale_years_binomial <- function(mat, globals, avg_years_between_sale){
   # alternative approach: 
@@ -112,46 +134,7 @@ get_sale_years_deterministic <- function(mat, globals, avg_years_between_sale){
 }
 
 
-get_acquisition_values <- function(assume, mv_list, globals){
-  
-  # determine the years in which properties are sold - either deterministically or by a random method
-  if(assume$avcycle_salemethod=="deterministic"){ # sales are deterministic
-    m_av_acquisition_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
-  } else if(assume$avcycle_salemethod=="binomial"){
-    m_av_acquisition_sale_year <- get_sale_years_binomial(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
-  }
-  
-  # m_av_acquisition_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
 
-  
-  # matrix of aquisition value ceilings and matrix of acquisition values used on AR
-  m_av_acquisition_ceiling <- get_mat(mv_list$m_mvtrue_acquisition)
-  m_av_acquisition_ceiling[, 1] <- mv_list$m_mvtrue_acquisition[, 1] # set first year to market value
-  
-  m_av_acquisition <- get_mat(mv_list$m_mvtrue_acquisition)
-  m_av_acquisition[, 1] <- mv_list$m_mvtrue_acquisition[, 1] # set first year to market value
-  
-  for(year in 2:globals$totyears){
-    m_av_acquisition_ceiling[, year] <- ifelse(m_av_acquisition_sale_year[, year]==1, mv_list$m_mvtrue_acquisition[, year], # set ceiling to mv in sale years
-                                            m_av_acquisition_ceiling[, year-1] * (1 + assume$acqvalue_grcap)) # calculate ceiling growth from there
-    # if policy for non-sale years is to drop the ceiling when market value is lower than celing, depending on policy
-    if(assume$acqvalue_decline_reset==1) {
-      m_av_acquisition_ceiling[, year] <- ifelse(m_av_acquisition_ceiling[, year] > mv_list$m_mvtrue_acquisition[, year],
-                             mv_list$m_mvtrue_acquisition[, year],
-                             m_av_acquisition_ceiling[, year])
-    }
-    
-    m_av_acquisition[, year] <- pmin(m_av_acquisition_ceiling[, year], mv_list$m_mvtrue_acquisition[, year])
-  }
-  
-  acquisition_val_list <- list()
-  acquisition_val_list <- within(acquisition_val_list, {
-    m_av_acquisition_sale_year <- m_av_acquisition_sale_year
-    m_av_acquisition_ceiling <- m_av_acquisition_ceiling
-    m_av_acquisition <- m_av_acquisition
-  })
-  return(acquisition_val_list)
-}
 
 get_previous_reassessment_year <- function(reassess_years){
   # for each year, get the index in 1:globals$totyears of the latest previous reassessment year
@@ -168,6 +151,17 @@ get_previous_reassessment_year <- function(reassess_years){
 # get_previous_reassessment_year(v_reassess_year)
 
 get_assessment_cycle_values <- function(assume, mv_list, globals){
+  
+  if(assume$acqvalue_share == 1) { # we have no cycle values
+    assessment_cycle_val_list <- list()
+    assessment_cycle_val_list <- within(assessment_cycle_val_list, {
+      v_reassess_year <- NULL
+      m_av_cycle_sale_year <- NULL
+      m_av_cycle <- NULL
+    })
+    return(assessment_cycle_val_list)
+  }
+  
   v_reassess_year <- create_cycle(assume$avcycle_nyears, assume$avcycle_startyear) # reassessment cycle -- 1 or 0
   v_prior_reassess_year <- get_previous_reassessment_year(v_reassess_year)
   baseyear_ratio <- mv_list$v_icum_mvgr[v_prior_reassess_year] / mv_list$v_icum_mvgr
@@ -215,6 +209,57 @@ get_assessment_cycle_values <- function(assume, mv_list, globals){
 }
 
 
+get_acquisition_values <- function(assume, mv_list, globals){
+  if(assume$acqvalue_share == 0){
+    acquisition_val_list <- list()
+    acquisition_val_list <- within(acquisition_val_list, {
+      m_av_acquisition_sale_year <- NULL
+      m_av_acquisition_ceiling <- NULL
+      m_av_acquisition <- NULL
+    })
+    return(acquisition_val_list)
+  }
+  
+  # determine the years in which properties are sold - either deterministically or by a random method
+  if(assume$acqvalue_salemethod=="deterministic"){ # sales are deterministic
+    m_av_acquisition_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
+  } else if(assume$acqvalue_salemethod=="binomial"){
+    m_av_acquisition_sale_year <- get_sale_years_binomial(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
+  }
+  
+  # m_av_acquisition_sale_year <- get_sale_years_deterministic(mv_list$m_mvtrue_acquisition, globals, assume$salecycle_nyears)
+  
+  
+  # matrix of aquisition value ceilings and matrix of acquisition values used on AR
+  m_av_acquisition_ceiling <- get_mat(mv_list$m_mvtrue_acquisition)
+  m_av_acquisition_ceiling[, 1] <- mv_list$m_mvtrue_acquisition[, 1] # set first year to market value
+  
+  m_av_acquisition <- get_mat(mv_list$m_mvtrue_acquisition)
+  m_av_acquisition[, 1] <- mv_list$m_mvtrue_acquisition[, 1] # set first year to market value
+  
+  for(year in 2:globals$totyears){
+    m_av_acquisition_ceiling[, year] <- ifelse(m_av_acquisition_sale_year[, year]==1, mv_list$m_mvtrue_acquisition[, year], # set ceiling to mv in sale years
+                                               m_av_acquisition_ceiling[, year-1] * (1 + assume$acqvalue_grcap)) # calculate ceiling growth from there
+    # if policy for non-sale years is to drop the ceiling when market value is lower than celing, depending on policy
+    if(assume$acqvalue_decline_reset==1) {
+      m_av_acquisition_ceiling[, year] <- ifelse(m_av_acquisition_ceiling[, year] > mv_list$m_mvtrue_acquisition[, year],
+                                                 mv_list$m_mvtrue_acquisition[, year],
+                                                 m_av_acquisition_ceiling[, year])
+    }
+    
+    m_av_acquisition[, year] <- pmin(m_av_acquisition_ceiling[, year], mv_list$m_mvtrue_acquisition[, year])
+  }
+  
+  acquisition_val_list <- list()
+  acquisition_val_list <- within(acquisition_val_list, {
+    m_av_acquisition_sale_year <- m_av_acquisition_sale_year
+    m_av_acquisition_ceiling <- m_av_acquisition_ceiling
+    m_av_acquisition <- m_av_acquisition
+  })
+  return(acquisition_val_list)
+}
+
+
 # define values for testing:
 # (assume <- as.list(rcuse[1, ]))
 
@@ -233,11 +278,11 @@ build_assessment_roll <- function(assume, globals, growth_scenarios){
   # names(mv_list)
 
   # get assessment-cycle values for those properties that are on assessment-cycle assessing
-  av_cycle_list <- get_assessment_cycle_values(assume, mv_list, globals)
+  av_cycle_list <- get_assessment_cycle_values(assume, mv_list, globals) # we have cycle values
   # names(av_cycle_list)
     
   # get acquisition values for those properties that are on acquisition-value assessing
-  av_acquisition_val_list <- get_acquisition_values(assume, mv_list, globals)
+  av_acquisition_val_list <- get_acquisition_values(assume, mv_list, globals) # we have acq values
   # names(av_acquisition_val_list)
   
   # prop_vectors is df with 1 row per year, with basic information about the run
@@ -246,43 +291,37 @@ build_assessment_roll <- function(assume, globals, growth_scenarios){
                          index=globals$iyears,
                          gr_to_next=mv_list$v_mvgr_to_next,
                          icum_vmgr=mv_list$v_icum_mvgr,
-                         reassess_year=av_cycle_list$v_reassess_year)
+                         reassess_year=ifelse(assume$acqvalue_share < 1, av_cycle_list$v_reassess_year, NA))
   
   # prop_matrices is df with 1 row per year per property for each property in a given matrix
+  cycle_mats <- bind_rows(prep_mat(mv_list$m_mvtrue_cycle),
+                          prep_mat(av_cycle_list$m_av_cycle),
+                          prep_mat(av_cycle_list$m_av_cycle_sale_year))
+  
+  acqval_mats <- bind_rows(prep_mat(mv_list$m_mvtrue_acquisition),
+                           prep_mat(av_acquisition_val_list$m_av_acquisition),
+                           prep_mat(av_acquisition_val_list$m_av_acquisition_ceiling),
+                           prep_mat(av_acquisition_val_list$m_av_acquisition_sale_year))
+  
   prop_matrices <- bind_rows(prep_mat(mv_list$m_mvtrue),
-                             prep_mat(mv_list$m_mvtrue_acquisition),
-                             prep_mat(mv_list$m_mvtrue_cycle),
-                             
-                             prep_mat(av_cycle_list$m_av_cycle),
-                             prep_mat(av_cycle_list$m_av_cycle_sale_year),
-                             
-                             prep_mat(av_acquisition_val_list$m_av_acquisition),
-                             prep_mat(av_acquisition_val_list$m_av_acquisition_ceiling),
-                             prep_mat(av_acquisition_val_list$m_av_acquisition_sale_year))
+                             cycle_mats,
+                             acqval_mats) %>%
+    mutate(ptype=ifelse(str_detect(propid, "acq"), "acquisition", "cycle"))
+  
   prop_matrices_wide <- prop_matrices %>%
     mutate(ptype=ifelse(str_detect(propid, "acq"), "acquisition", "cycle"),  
            propid=as.numeric(str_extract(propid, "(\\d)+"))) %>% # construct a numeric property id
-    spread(vname, value)
-  
-  # str_sub(propid, 1, 3),
-  # get_mlist <- function(mlist){
-  #   lname <-  deparse(substitute(mlist))
-  #   mat_list <- names(mlist)[str_sub(names(mlist), 1, 2)=="m_"]
-  #   mat_list <- paste0(lname, "$", mat_list)
-  #   # print(mat_list)
-  #   return(mat_list)
-  # }
-  # get_mlist(mv_list)
-  # ns(prop_all)
+    spread(vname, value) %>%
+    # delete any blank records we created, now that we have a wide file with all desired columns
+    filter(!is.na(propid))
   
   prop_all <- prop_vectors %>%
     right_join(prop_matrices_wide, by="year") %>%
     select(runname, ptype, propid, year, index, 
            gr_to_next, icum_vmgr, 
            mvtrue, mvtrue_cycle, mvtrue_acquisition,
-           reassess_year, av_cycle_sale_year,  av_cycle,
-           av_acquisition_sale_year, av_acquisition_ceiling, av_acquisition
-           )
+           reassess_year, av_cycle_sale_year, av_cycle,
+           av_acquisition_sale_year, av_acquisition_ceiling, av_acquisition)
   
   return(prop_all)
 }

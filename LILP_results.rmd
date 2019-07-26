@@ -21,7 +21,7 @@ output:
 # https://stackoverflow.com/questions/44816945/why-setting-working-directory-in-r-notebook-doesnt-change-working-directory-in
 # knitr::opts_knit$set(root.dir = normalizePath("path")) # wherre path is desired wd
 
-knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+# knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 
 knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
 # knitr::opts_chunk$set(fig.width = ..., fig.height = ...)
@@ -43,157 +43,122 @@ knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
 ```
 
 
-```{r clear_warnings, eval=FALSE}
+```{r clear_warnings, include=FALSE, eval=FALSE}
 # run this line to clear any old warning messages
 assign("last.warning", NULL, envir = baseenv())
 ```
 
 
 ```{r libs, include=FALSE}
-source("./r/includes/libraries.r")
-source("./r/includes/globals.r")
+source(file.path(PROJHOME, "subprograms", "libraries.r"))
 
-source("./r/includes/functions_general.r")
-source("./r/includes/functions_state_puf.r")
-
-```
-
-
-```{r dataSetup, include=FALSE}
-pufny1 <- readRDS(paste0(globals$tc.dir, "NY/", "pufny1.rds"))
-# wt is the first cut weight
-# wtny_ratio same
-# wt_puf original puf weight
-glimpse(pufny1)
-
-puf.vnames <- get_puf_vnames()
-
-(inclink <- get_income_ranges(2011))
+source(file.path(PROJHOME, "subprograms", "globals.r"))
+source(file.path(PROJHOME, "subprograms", "functions.r"))
+source(file.path(PROJHOME, "subprograms", "functions_assessment_roll.r"))
 
 ```
 
 
+```{r growth, include=FALSE}
+# construct mv growth scenarios
+globals
+# gr_shock_us <- c(.06, .1, .1, .03, -.02, -.06, -.07, -.03, -.01, .02, .05, .05)
 
-# Step 1, base-year file of state residents
+greatrec <- read_csv("./data/greatrec_states.csv")
+greatrec %>%
+  gather(stabbr, pch, -year, -date) %>%
+  filter(stabbr %in% c(globals$css, "US")) %>%
+  ggplot(aes(year, pch, colour=stabbr)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept = 0)
+# looks like years 2003:2017 (15 years) is about right
 
-```{r include=FALSE}
-result <- readRDS(paste0(globals$tc.dir, "NY/targets538/", "result.rds"))
-targets.tol <- readRDS(paste0(globals$tc.dir, "NY/targets538/", "targets.tol.rds"))
+greatrec_scenarios <- greatrec %>%
+  select(-date) %>%
+  rename(cyear=year) %>%
+  filter(cyear %in% 2002:2017)
 
-check <- tibble(target.num=targets.tol$target.num,
-                target=targets.tol$target,
-                lb=result$constraint_lower_bounds,
-                target.calc=result$constraints,
-                ub=result$constraint_upper_bounds) %>%
-  mutate(violation=case_when(target.calc < lb ~ target.calc - lb,
-                             target.calc > ub ~ ub - target.calc,
-                             TRUE ~ 0),
-         vpct=violation / target) %>% 
-  left_join(targets.tol %>% 
-              select(target.num, rhs, tol.group, pdiff, tol.default, tol, h2vname, agi_group, vdesc),
-            by="target.num") %>%
-  select(target.num, target, rhs, everything())
-
-# check %>%
-#   select(-tol.group, -violation) %>%
-#   kable(digits=c(rep(0, 6), rep(1, 4), rep(0, 3)), format.args = list(big.mark=",")) %>%
-#   kableExtra::kable_styling()
-count(check, h2vname)
+growth_scenarios <- greatrec_scenarios
+ns(growth_scenarios)
 
 ```
 
 
-```{r include=FALSE}
-f <- function(name){
-  df <- check %>%
-    filter(h2vname==name) %>%
-    left_join(inclink, by="agi_group")
-  
-  # set up definitions
-  c_type <- ifelse(str_detect(df$h2vname[1], "_n"), "# recs", "wtdsum")
-  c_suffix <- ifelse(c_type=="wtdsum", ": $ millions", ": weighted # of records")
-  c_vdesc <- df$vdesc[1]
-  
-  capt <- paste0(c_vdesc, c_suffix)
-  
-  tabdat <- df %>%
-    rename(init_val=rhs, final_val=target.calc,
-           init_pdiff=pdiff, lower=lb, upper=ub) %>%
-    adorn_totals() %>%
-    mutate(type=c_type, vdesc=c_vdesc) %>%
-    mutate_at(vars(target, init_val, lower, upper, final_val), ~ ifelse(type=="wtdsum", . / 1e6, .)) %>%
-    mutate(init_pdiff=init_val / target * 100 - 100,
-           tol=ifelse(row_number()==n(), NA_real_, tol),
-           final_pdiff=final_val / target * 100 - 100) %>%
-    select(h2vname, target.num, agi_label, target, init_val, init_pdiff, tol, lower, upper, final_val, final_pdiff)
-  
-  tabdat %>%
-    kable(caption=capt, digits=c(rep(0, 5), rep(1, 2), rep(0, 3), 1, 0), format.args = list(big.mark=",")) %>%
-    kableExtra::kable_styling(full_width = TRUE)
-}
-```
+```{r runmodel, include=FALSE}
+rcdir <- "D:/Dropbox/Open Projects/LILP/PropertyTaxAndInstitutions/ProjectReport/"
+rcfn <- "Boyd LILP PropertyTaxInstitutions(6).xlsx"
+rcpath <- paste0(rcdir, rcfn)
 
+rc <- read_excel(rcpath, sheet="run_control", skip = 4)
 
-## Selected components of income, and number of returns with that income
-```{r}
-f("e00100")
-f("e00100_n")
+rcuse <- rc %>%
+  filter(include==1)
+# rcuse
+rcuse$runname
 
-f("e00200")
-f("e00200_n")
+a <- proc.time()
+avroll <- rcuse %>%
+  rowwise() %>% # each row is a scenario
+  do(build_assessment_roll(as.list(.), globals, growth_scenarios)) %>%
+  ungroup
+b <- proc.time()
+b - a
 
-f("e00300")
-f("e00300_n")
+#.. create summary of assessment roll ----
+glimpse(avroll)
 
-f("e00650")
-f("e00650_n")
-
-f("e00900")
-f("e00900_n")
-
-f("e01000")
-f("e01000_n")
-
-f("e01700")
-f("e01700_n")
-
-f("e02500")
-f("e02500_n")
+avroll_sum <- avroll %>% 
+  group_by(runname, year) %>%
+  mutate(numrec=1) %>%
+  summarise_at(vars(numrec,
+                    starts_with("mvtrue"),
+                    reassess_year, av_cycle_sale_year, av_cycle,
+                    av_acquisition_sale_year, av_acquisition_ceiling, av_acquisition),
+               ~sum(., na.rm=TRUE)) %>%
+  mutate(av_total=av_acquisition + av_cycle) %>%
+  ungroup
+ht(avroll_sum)
 
 ```
 
 
-## Selected deductions
-```{r}
-f("e18400")
-f("e18400_n")
+# Exploratory graphs
 
-f("e18500")
-f("e18500_n")
+```{r xgraphs, include=TRUE}
+avroll_sum %>%
+  filter(year %in% 1:20) %>%
+  select(year, runname, mvtrue, av_total) %>%
+  gather(vname, value, -year, -runname) %>%
+  ggplot(aes(year, value, colour=vname)) +
+  geom_line() +
+  geom_hline(yintercept = 100) +
+  scale_x_continuous(breaks=seq(0, 40, 2)) +
+  facet_wrap(~runname, ncol=2)
 
-```
-
-
-
-
-## Tax-related variables
-```{r}
-
-f("e09600")
-f("e09600_n")
-
-f("e05800")
-f("e05800_n")
-
-f("e07150")
-f("e07150_n")
-
-f("e09400")
-f("e09400_n")
-
-f("e10300")
-f("e10300_n")
-
+avroll_sum %>%
+  filter(year %in% 1:20) %>%
+  # filter(str_sub(runname, 3, 3)!="_") %>%
+  select(year, runname, av_total) %>%
+  ggplot(aes(year, av_total, colour=runname)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept = 100) +
+  scale_x_continuous(breaks=seq(0, 40, 2), limits = c(0, NA))
 
 ```
 
+
+# Graphs for a given state
+```{r stgraphs, include=FALSE}
+avroll_sum %>%
+  filter(year %in% 1:20) %>%
+  select(year, runname, mvtrue, av_total) %>%
+  gather(vname, value, -year, -runname) %>%
+  ggplot(aes(year, value, colour=vname)) +
+  geom_line() +
+  geom_hline(yintercept = 100) +
+  scale_x_continuous(breaks=seq(0, 40, 2)) +
+  facet_wrap(~runname, ncol=2)
+
+```
